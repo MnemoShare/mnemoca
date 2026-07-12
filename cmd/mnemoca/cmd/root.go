@@ -128,9 +128,13 @@ func pf(w io.Writer, format string, args ...any) { _, _ = fmt.Fprintf(w, format,
 
 func pln(w io.Writer, args ...any) { _, _ = fmt.Fprintln(w, args...) }
 
-// algListHelp renders the registered algorithms for flag help text.
-func algListHelp() string {
-	algs := pkix.Algorithms()
+// algListHelp renders the sign-capable algorithms for flag help text.
+func algListHelp() string { return joinAlgs(pkix.Algorithms()) }
+
+// keyAlgListHelp renders all subject-key algorithms (adds RSA key-only).
+func keyAlgListHelp() string { return joinAlgs(pkix.KeyAlgorithms()) }
+
+func joinAlgs(algs []pkix.Algorithm) string {
 	slices.Sort(algs)
 	out := make([]string, len(algs))
 	for i, a := range algs {

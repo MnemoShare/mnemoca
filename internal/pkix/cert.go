@@ -78,6 +78,9 @@ func CreateCertificate(template *x509.Certificate, issuer *Certificate, pub cryp
 	if err != nil {
 		return nil, err
 	}
+	if sigInfo.KeyOnly || sigInfo.VerifyOnly {
+		return nil, fmt.Errorf("pkix: %q cannot sign certificates (RSA is verify-only; use an ECDSA or ML-DSA CA)", sigAlg)
+	}
 	pubAlg, err := AlgorithmForKey(pub)
 	if err != nil {
 		return nil, err

@@ -66,6 +66,10 @@ func CreateCertificateRequest(template *x509.CertificateRequest, signer crypto.S
 			template.SignatureAlgorithm = x509.ECDSAWithSHA384
 		case Ed25519:
 			template.SignatureAlgorithm = x509.PureEd25519
+		case RSA2048, RSA3072, RSA4096:
+			// RSA keys self-sign their CSRs (the CA still signs the
+			// certificate with its own algorithm).
+			template.SignatureAlgorithm = x509.SHA256WithRSA
 		}
 		der, err := x509.CreateCertificateRequest(rand.Reader, template, signer)
 		if err != nil {

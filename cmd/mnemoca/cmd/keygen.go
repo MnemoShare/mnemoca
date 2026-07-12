@@ -43,7 +43,7 @@ var keygenCmd = &cobra.Command{
 }
 
 func init() {
-	keygenCmd.Flags().StringVar(&keygenAlg, "alg", "", "key algorithm ("+algListHelp()+") (required)")
+	keygenCmd.Flags().StringVar(&keygenAlg, "alg", "", "key algorithm ("+keyAlgListHelp()+") (required)")
 	keygenCmd.Flags().StringVarP(&keygenOut, "out", "o", "", "output file (default stdout)")
 	_ = keygenCmd.MarkFlagRequired("alg")
 	RootCmd.AddCommand(keygenCmd)

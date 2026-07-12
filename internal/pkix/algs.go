@@ -14,6 +14,7 @@ import (
 	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/asn1"
@@ -32,6 +33,18 @@ const (
 	MLDSA44   Algorithm = "ml-dsa-44"
 	MLDSA65   Algorithm = "ml-dsa-65"
 	MLDSA87   Algorithm = "ml-dsa-87"
+
+	// RSA subject-key algorithms: MnemoCA issues certificates FOR RSA keys
+	// (hardware tokens, TPM attestation keys) but never signs WITH RSA
+	// ("RSA verify-only", PLAN §2). Keys below 2048 bits are rejected.
+	RSA2048 Algorithm = "rsa-2048"
+	RSA3072 Algorithm = "rsa-3072"
+	RSA4096 Algorithm = "rsa-4096"
+
+	// RSA signature algorithms, verification-only (CSR self-signatures).
+	RSASHA256 Algorithm = "rsa-sha256"
+	RSASHA384 Algorithm = "rsa-sha384"
+	RSASHA512 Algorithm = "rsa-sha512"
 
 	// Composite algorithms per draft-ietf-lamps-pq-composite-sigs-19.
 	// Experimental until the RFC publishes (ADR-0004).
@@ -65,6 +78,12 @@ type Info struct {
 	Hybrid bool        // composite classical+PQ
 	// Experimental algorithms require explicit opt-in (draft-pinned composites).
 	Experimental bool
+	// KeyOnly marks subject-key algorithms the CA issues for but cannot
+	// sign with (RSA).
+	KeyOnly bool
+	// VerifyOnly marks signature algorithms accepted on CSR self-signatures
+	// but never used for CA signing (RSA signatures).
+	VerifyOnly bool
 }
 
 var registry = map[Algorithm]Info{
@@ -84,16 +103,38 @@ var registry = map[Algorithm]Info{
 	},
 }
 
-// Lookup returns registry information for alg.
-func Lookup(alg Algorithm) (Info, error) {
-	info, ok := registry[alg]
-	if !ok {
-		return Info{}, fmt.Errorf("pkix: unknown algorithm %q", alg)
-	}
-	return info, nil
+// auxRegistry holds RSA key-only and verify-only entries, kept out of
+// Algorithms() so CA/root algorithm enumeration stays sign-capable-only.
+var auxRegistry = map[Algorithm]Info{
+	RSA2048: {Alg: RSA2048, KeyOnly: true},
+	RSA3072: {Alg: RSA3072, KeyOnly: true},
+	RSA4096: {Alg: RSA4096, KeyOnly: true},
+	RSASHA256: {
+		Alg: RSASHA256, Hash: crypto.SHA256, VerifyOnly: true,
+		OID: asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 11},
+	},
+	RSASHA384: {
+		Alg: RSASHA384, Hash: crypto.SHA384, VerifyOnly: true,
+		OID: asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 12},
+	},
+	RSASHA512: {
+		Alg: RSASHA512, Hash: crypto.SHA512, VerifyOnly: true,
+		OID: asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 13},
+	},
 }
 
-// Algorithms lists all registered algorithms.
+// Lookup returns registry information for alg.
+func Lookup(alg Algorithm) (Info, error) {
+	if info, ok := registry[alg]; ok {
+		return info, nil
+	}
+	if info, ok := auxRegistry[alg]; ok {
+		return info, nil
+	}
+	return Info{}, fmt.Errorf("pkix: unknown algorithm %q", alg)
+}
+
+// Algorithms lists the sign-capable algorithms (valid for CA keys).
 func Algorithms() []Algorithm {
 	out := make([]Algorithm, 0, len(registry))
 	for alg := range registry {
@@ -102,10 +143,27 @@ func Algorithms() []Algorithm {
 	return out
 }
 
+// KeyAlgorithms lists all algorithms a subject key may use (sign-capable
+// plus RSA key-only), for profile AllowedKeyAlgs and keygen.
+func KeyAlgorithms() []Algorithm {
+	out := Algorithms()
+	for alg, info := range auxRegistry {
+		if info.KeyOnly {
+			out = append(out, alg)
+		}
+	}
+	return out
+}
+
 // ByOID resolves a signature algorithm OID to a registered algorithm.
 func ByOID(oid asn1.ObjectIdentifier) (Info, error) {
 	for _, info := range registry {
 		if info.OID.Equal(oid) {
+			return info, nil
+		}
+	}
+	for _, info := range auxRegistry {
+		if len(info.OID) > 0 && info.OID.Equal(oid) {
 			return info, nil
 		}
 	}
@@ -137,6 +195,12 @@ func GenerateKey(alg Algorithm) (crypto.Signer, error) {
 		return priv, err
 	case MLDSA44, MLDSA65, MLDSA87:
 		return mldsa.GenerateKey(mldsaParams(alg))
+	case RSA2048:
+		return rsa.GenerateKey(rand.Reader, 2048)
+	case RSA3072:
+		return rsa.GenerateKey(rand.Reader, 3072)
+	case RSA4096:
+		return rsa.GenerateKey(rand.Reader, 4096)
 	case CompositeMLDSA65ECDSAP256:
 		return generateCompositeKey(alg, MLDSA65, ECDSAP256)
 	case CompositeMLDSA44Ed25519:
@@ -167,6 +231,17 @@ func AlgorithmForKey(pub crypto.PublicKey) (Algorithm, error) {
 		return "", fmt.Errorf("pkix: unsupported ECDSA curve %s", k.Curve.Params().Name)
 	case ed25519.PublicKey:
 		return Ed25519, nil
+	case *rsa.PublicKey:
+		switch bits := k.N.BitLen(); {
+		case bits >= 4096:
+			return RSA4096, nil
+		case bits >= 3072:
+			return RSA3072, nil
+		case bits >= 2048:
+			return RSA2048, nil
+		default:
+			return "", fmt.Errorf("pkix: RSA keys below 2048 bits are not accepted (got %d)", bits)
+		}
 	case *mldsa.PublicKey:
 		switch k.Parameters().String() {
 		case mldsa.MLDSA44().String():
@@ -190,6 +265,9 @@ func signTBS(signer crypto.Signer, alg Algorithm, message []byte) ([]byte, error
 	info, err := Lookup(alg)
 	if err != nil {
 		return nil, err
+	}
+	if info.KeyOnly || info.VerifyOnly {
+		return nil, fmt.Errorf("pkix: %q is not a CA signing algorithm (RSA is verify-only)", alg)
 	}
 	switch {
 	case info.Hash != 0:
@@ -261,6 +339,21 @@ func verifySignature(pub crypto.PublicKey, alg Algorithm, message, sig []byte) e
 			return fmt.Errorf("pkix: key type %T does not match %q", pub, alg)
 		}
 		return k.verify(message, sig)
+	case RSASHA256, RSASHA384, RSASHA512:
+		k, ok := pub.(*rsa.PublicKey)
+		if !ok {
+			return fmt.Errorf("pkix: key type %T does not match %q", pub, alg)
+		}
+		if _, err := AlgorithmForKey(k); err != nil {
+			return err // enforces the 2048-bit floor
+		}
+		info := auxRegistry[alg]
+		h := info.Hash.New()
+		h.Write(message)
+		if err := rsa.VerifyPKCS1v15(k, info.Hash, h.Sum(nil), sig); err != nil {
+			return fmt.Errorf("pkix: invalid RSA signature: %w", err)
+		}
+		return nil
 	}
 	return fmt.Errorf("pkix: cannot verify algorithm %q", alg)
 }
