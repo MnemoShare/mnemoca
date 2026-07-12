@@ -1,6 +1,7 @@
 package acme
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -18,7 +19,7 @@ import (
 // CreateEABKey mints an external account binding HMAC key for the tenant
 // and returns its key ID plus the base64url-encoded key — what an operator
 // hands to a client (e.g. a cert-manager Issuer's keySecretRef).
-func CreateEABKey(st *store.Store, tenant string) (string, string, error) {
+func CreateEABKey(ctx context.Context, st store.Store, tenant string) (string, string, error) {
 	kid, err := randID()
 	if err != nil {
 		return "", "", err
@@ -28,7 +29,7 @@ func CreateEABKey(st *store.Store, tenant string) (string, string, error) {
 		return "", "", fmt.Errorf("acme: generating EAB key: %w", err)
 	}
 	ek := eabKey{KID: kid, Key: key, CreatedAt: time.Now().UTC()}
-	if err := st.PutJSON(eabBucket(tenant), kid, &ek); err != nil {
+	if err := store.PutJSON(ctx, st, eabBucket(tenant), kid, &ek); err != nil {
 		return "", "", fmt.Errorf("acme: storing EAB key: %w", err)
 	}
 	return kid, base64.RawURLEncoding.EncodeToString(key), nil
@@ -52,7 +53,7 @@ func (s *server) handleNewAccount(w http.ResponseWriter, r *http.Request, req *j
 		}
 	}
 
-	existing, err := s.accountByThumbprint(req.tenant, req.thumb)
+	existing, err := s.accountByThumbprint(r.Context(), req.tenant, req.thumb)
 	if err != nil {
 		return err
 	}
@@ -68,7 +69,7 @@ func (s *server) handleNewAccount(w http.ResponseWriter, r *http.Request, req *j
 	var eabKID string
 	switch {
 	case len(body.ExternalAccountBinding) > 0:
-		eabKID, err = s.verifyEAB(req.tenant, req.jwk, body.ExternalAccountBinding, s.url(req.tenant, "/new-account"))
+		eabKID, err = s.verifyEAB(r.Context(), req.tenant, req.jwk, body.ExternalAccountBinding, s.url(req.tenant, "/new-account"))
 		if err != nil {
 			return err
 		}
@@ -89,7 +90,7 @@ func (s *server) handleNewAccount(w http.ResponseWriter, r *http.Request, req *j
 		EAB:        eabKID,
 		CreatedAt:  time.Now().UTC(),
 	}
-	if err := s.st.PutJSON(accountsBucket(req.tenant), id, &acct); err != nil {
+	if err := store.PutJSON(r.Context(), s.st, accountsBucket(req.tenant), id, &acct); err != nil {
 		return fmt.Errorf("acme: storing account: %w", err)
 	}
 	if err := s.audit(r, req.tenant, "acme.account.new", id, audit.Object{Type: "acme-account", ID: id},
@@ -123,7 +124,7 @@ func (s *server) handleAccount(w http.ResponseWriter, r *http.Request, req *jwsR
 		}
 		if body.Contact != nil {
 			acct.Contact = body.Contact
-			if err := s.st.PutJSON(accountsBucket(req.tenant), acct.ID, acct); err != nil {
+			if err := store.PutJSON(r.Context(), s.st, accountsBucket(req.tenant), acct.ID, acct); err != nil {
 				return fmt.Errorf("acme: updating account: %w", err)
 			}
 		}
@@ -134,9 +135,9 @@ func (s *server) handleAccount(w http.ResponseWriter, r *http.Request, req *jwsR
 }
 
 // accountByThumbprint scans the tenant's accounts for one bound to thumb.
-func (s *server) accountByThumbprint(tenant, thumb string) (*account, error) {
+func (s *server) accountByThumbprint(ctx context.Context, tenant, thumb string) (*account, error) {
 	var found *account
-	err := store.ForEachJSON(s.st, accountsBucket(tenant), func(_ string, a account) error {
+	err := store.ForEachJSON(ctx, s.st, accountsBucket(tenant), func(_ string, a account) error {
 		if a.Thumbprint == thumb {
 			found = &a
 		}
@@ -150,7 +151,7 @@ func (s *server) accountByThumbprint(tenant, thumb string) (*account, error) {
 
 // verifyEAB checks an externalAccountBinding: an HS256 flattened JWS whose
 // payload is the account JWK, MAC'd with a per-tenant EAB key (RFC 8555 §7.3.4).
-func (s *server) verifyEAB(tenant string, outerJWK json.RawMessage, raw json.RawMessage, reqURL string) (string, error) {
+func (s *server) verifyEAB(ctx context.Context, tenant string, outerJWK json.RawMessage, raw json.RawMessage, reqURL string) (string, error) {
 	var jws flatJWS
 	if err := json.Unmarshal(raw, &jws); err != nil {
 		return "", errf(http.StatusBadRequest, "malformed", "invalid externalAccountBinding: %v", err)
@@ -192,7 +193,7 @@ func (s *server) verifyEAB(tenant string, outerJWK json.RawMessage, raw json.Raw
 	}
 
 	var ek eabKey
-	if err := s.st.GetJSON(eabBucket(tenant), hdr.KID, &ek); err != nil {
+	if err := store.GetJSON(ctx, s.st, eabBucket(tenant), hdr.KID, &ek); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return "", errf(http.StatusUnauthorized, "unauthorized", "unknown EAB key %q", hdr.KID)
 		}

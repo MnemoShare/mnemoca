@@ -23,7 +23,7 @@ var initCmd = &cobra.Command{
 	Short: "Initialize the CA: root certificate(s) and audit key",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		env, err := openEnv()
+		env, err := openEnv(cmd.Context())
 		if err != nil {
 			return err
 		}
@@ -54,7 +54,11 @@ var initCmd = &cobra.Command{
 			}
 			pf(out, "  pair root:     %-12s %s\n", info.PairAlg, pairPath)
 		}
-		pf(out, "  audit log:     %s\n", filepath.Join(env.Dir, "audit.log"))
+		if env.DB == "mongo" {
+			pf(out, "  audit log:     store-backed (mongo)\n")
+		} else {
+			pf(out, "  audit log:     %s\n", filepath.Join(env.Dir, "audit.log"))
+		}
 		return nil
 	},
 }

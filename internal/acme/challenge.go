@@ -19,7 +19,7 @@ import (
 
 // handleAuthz serves an authorization via POST-as-GET (RFC 8555 §7.5).
 func (s *server) handleAuthz(w http.ResponseWriter, r *http.Request, req *jwsRequest) error {
-	az, err := s.loadAuthz(req, r.PathValue("id"))
+	az, err := s.loadAuthz(r.Context(), req, r.PathValue("id"))
 	if err != nil {
 		return err
 	}
@@ -31,7 +31,7 @@ func (s *server) handleAuthz(w http.ResponseWriter, r *http.Request, req *jwsReq
 	}
 	for _, chID := range az.ChallengeIDs {
 		var ch challenge
-		if err := s.st.GetJSON(challengesBucket(req.tenant), chID, &ch); err != nil {
+		if err := store.GetJSON(r.Context(), s.st, challengesBucket(req.tenant), chID, &ch); err != nil {
 			return fmt.Errorf("acme: loading challenge: %w", err)
 		}
 		resp.Challenges = append(resp.Challenges, s.challengeJSON(req.tenant, &ch))
@@ -45,14 +45,14 @@ func (s *server) handleAuthz(w http.ResponseWriter, r *http.Request, req *jwsReq
 func (s *server) handleChallenge(w http.ResponseWriter, r *http.Request, req *jwsRequest) error {
 	id := r.PathValue("id")
 	var ch challenge
-	if err := s.st.GetJSON(challengesBucket(req.tenant), id, &ch); err != nil {
+	if err := store.GetJSON(r.Context(), s.st, challengesBucket(req.tenant), id, &ch); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return errf(http.StatusNotFound, "malformed", "unknown challenge %q", id)
 		}
 		return fmt.Errorf("acme: loading challenge: %w", err)
 	}
 	var az authz
-	if err := s.st.GetJSON(authzsBucket(req.tenant), ch.AuthzID, &az); err != nil {
+	if err := store.GetJSON(r.Context(), s.st, authzsBucket(req.tenant), ch.AuthzID, &az); err != nil {
 		return fmt.Errorf("acme: loading authorization: %w", err)
 	}
 	if req.account == nil || az.AccountID != req.account.ID {
@@ -94,20 +94,20 @@ func (s *server) validateChallenge(ctx context.Context, tenant string, az *authz
 		ch.Validated = time.Now().UTC()
 		az.Status = statusValid
 	}
-	if err := s.st.PutJSON(challengesBucket(tenant), ch.ID, ch); err != nil {
+	if err := store.PutJSON(ctx, s.st, challengesBucket(tenant), ch.ID, ch); err != nil {
 		return fmt.Errorf("acme: storing challenge: %w", err)
 	}
-	if err := s.st.PutJSON(authzsBucket(tenant), az.ID, az); err != nil {
+	if err := store.PutJSON(ctx, s.st, authzsBucket(tenant), az.ID, az); err != nil {
 		return fmt.Errorf("acme: storing authorization: %w", err)
 	}
-	return s.updateOrderStatus(tenant, az.OrderID)
+	return s.updateOrderStatus(ctx, tenant, az.OrderID)
 }
 
 // updateOrderStatus recomputes a pending order after an authorization
 // changes: all-valid → ready, any-invalid → invalid.
-func (s *server) updateOrderStatus(tenant, orderID string) error {
+func (s *server) updateOrderStatus(ctx context.Context, tenant, orderID string) error {
 	var o order
-	if err := s.st.GetJSON(ordersBucket(tenant), orderID, &o); err != nil {
+	if err := store.GetJSON(ctx, s.st, ordersBucket(tenant), orderID, &o); err != nil {
 		return fmt.Errorf("acme: loading order: %w", err)
 	}
 	if o.Status != statusPending {
@@ -116,14 +116,14 @@ func (s *server) updateOrderStatus(tenant, orderID string) error {
 	allValid := true
 	for _, azID := range o.AuthzIDs {
 		var az authz
-		if err := s.st.GetJSON(authzsBucket(tenant), azID, &az); err != nil {
+		if err := store.GetJSON(ctx, s.st, authzsBucket(tenant), azID, &az); err != nil {
 			return fmt.Errorf("acme: loading authorization: %w", err)
 		}
 		switch az.Status {
 		case statusInvalid:
 			o.Status = statusInvalid
 			o.Error = &problem{Type: errURN + "unauthorized", Detail: "authorization for " + az.Identifier.Value + " failed", Status: http.StatusForbidden}
-			return s.st.PutJSON(ordersBucket(tenant), orderID, &o)
+			return store.PutJSON(ctx, s.st, ordersBucket(tenant), orderID, &o)
 		case statusValid:
 		default:
 			allValid = false
@@ -133,7 +133,7 @@ func (s *server) updateOrderStatus(tenant, orderID string) error {
 		return nil
 	}
 	o.Status = statusReady
-	return s.st.PutJSON(ordersBucket(tenant), orderID, &o)
+	return store.PutJSON(ctx, s.st, ordersBucket(tenant), orderID, &o)
 }
 
 // checkHTTP01 fetches http://{host}:{port}/.well-known/acme-challenge/{token}
@@ -180,9 +180,9 @@ func (s *server) checkDNS01(ctx context.Context, host, keyAuthz string) error {
 }
 
 // loadAuthz loads an authorization and enforces account ownership.
-func (s *server) loadAuthz(req *jwsRequest, id string) (*authz, error) {
+func (s *server) loadAuthz(ctx context.Context, req *jwsRequest, id string) (*authz, error) {
 	var az authz
-	if err := s.st.GetJSON(authzsBucket(req.tenant), id, &az); err != nil {
+	if err := store.GetJSON(ctx, s.st, authzsBucket(req.tenant), id, &az); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, errf(http.StatusNotFound, "malformed", "unknown authorization %q", id)
 		}

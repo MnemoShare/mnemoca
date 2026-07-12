@@ -1,6 +1,7 @@
 package acme
 
 import (
+	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/ed25519"
@@ -82,7 +83,7 @@ func (s *server) verifyRequest(r *http.Request, tenant string, allowJWK bool) (*
 	if hdr.URL != s.requestURL(r) {
 		return nil, errf(http.StatusUnauthorized, "unauthorized", "JWS url %q does not match request URL %q", hdr.URL, s.requestURL(r))
 	}
-	ok, err := s.consumeNonce(tenant, hdr.Nonce)
+	ok, err := s.consumeNonce(r.Context(), tenant, hdr.Nonce)
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +101,7 @@ func (s *server) verifyRequest(r *http.Request, tenant string, allowJWK bool) (*
 		}
 		req.jwk = hdr.JWK
 	case hdr.KID != "":
-		acct, err := s.accountByKID(tenant, hdr.KID)
+		acct, err := s.accountByKID(r.Context(), tenant, hdr.KID)
 		if err != nil {
 			return nil, err
 		}
@@ -136,14 +137,14 @@ func (s *server) verifyRequest(r *http.Request, tenant string, allowJWK bool) (*
 
 // accountByKID resolves a kid (which must be one of this tenant's account
 // URLs) to a valid stored account.
-func (s *server) accountByKID(tenant, kid string) (*account, error) {
+func (s *server) accountByKID(ctx context.Context, tenant, kid string) (*account, error) {
 	prefix := s.url(tenant, "/account/")
 	if !strings.HasPrefix(kid, prefix) {
 		return nil, errf(http.StatusBadRequest, "malformed", "kid %q is not an account URL of this tenant", kid)
 	}
 	id := strings.TrimPrefix(kid, prefix)
 	var acct account
-	if err := s.st.GetJSON(accountsBucket(tenant), id, &acct); err != nil {
+	if err := store.GetJSON(ctx, s.st, accountsBucket(tenant), id, &acct); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, errf(http.StatusBadRequest, "accountDoesNotExist", "unknown account %q", id)
 		}

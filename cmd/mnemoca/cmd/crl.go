@@ -24,7 +24,7 @@ var crlCmd = &cobra.Command{
 		if chain != ca.ChainPrimary && chain != ca.ChainPair {
 			return fmt.Errorf("invalid --chain %q (want primary or pair)", crlChain)
 		}
-		env, err := openEnv()
+		env, err := openEnv(cmd.Context())
 		if err != nil {
 			return err
 		}

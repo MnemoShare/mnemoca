@@ -56,6 +56,15 @@ type Logger interface {
 	Log(ctx context.Context, rec Record) error
 }
 
+// ChainLogger is a production audit log: a Logger that can also write
+// checkpoint records and be closed. Implemented by the file-backed Log and
+// the store-backed StoreLog (ADR-0010).
+type ChainLogger interface {
+	Logger
+	Checkpoint(ctx context.Context) error
+	Close() error
+}
+
 // Nop discards records (tests only).
 type Nop struct{}
 
@@ -75,14 +84,8 @@ type Log struct {
 // keyID names the audit key (for rotation). If the file is non-empty, the
 // chain head is recovered from the last record.
 func Open(path string, sig signer.Signer, keyID string) (*Log, error) {
-	info, err := pkix.Lookup(sig.Algorithm())
-	if err != nil {
+	if err := checkAuditAlg(sig); err != nil {
 		return nil, err
-	}
-	if info.Hash != 0 {
-		// Digest-based signers (ECDSA) would diverge between Log and Verify;
-		// ADR-0008 specifies a message-signing audit key (ML-DSA-65).
-		return nil, fmt.Errorf("audit: audit key must use a message-signing algorithm, got %q", sig.Algorithm())
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
 	if err != nil {
@@ -134,6 +137,75 @@ func canonical(rec Record) ([]byte, error) {
 	return json.Marshal(rec)
 }
 
+// checkAuditAlg rejects digest-based signers (ECDSA), which would diverge
+// between Log and Verify; ADR-0008 specifies a message-signing audit key
+// (ML-DSA-65).
+func checkAuditAlg(sig signer.Signer) error {
+	info, err := pkix.Lookup(sig.Algorithm())
+	if err != nil {
+		return err
+	}
+	if info.Hash != 0 {
+		return fmt.Errorf("audit: audit key must use a message-signing algorithm, got %q", sig.Algorithm())
+	}
+	return nil
+}
+
+// chainHash computes the record's chained hash: SHA-256(prev_hash || canonical).
+func chainHash(rec Record) ([]byte, error) {
+	canon, err := canonical(rec)
+	if err != nil {
+		return nil, err
+	}
+	prev, err := hex.DecodeString(rec.PrevHash)
+	if err != nil {
+		return nil, fmt.Errorf("audit: bad prev_hash: %w", err)
+	}
+	h := sha256.New()
+	h.Write(prev)
+	h.Write(canon)
+	return h.Sum(nil), nil
+}
+
+// sealRecord computes rec's chained hash and signs it. Seq, Time, PrevHash,
+// and KeyID must already be set. Shared by the file and store logs.
+func sealRecord(rec *Record, sig signer.Signer) error {
+	sum, err := chainHash(*rec)
+	if err != nil {
+		return fmt.Errorf("audit: corrupt chain head: %w", err)
+	}
+	rec.Hash = hex.EncodeToString(sum)
+	s, err := sig.Sign(rand.Reader, sum, crypto.Hash(0))
+	if err != nil {
+		return fmt.Errorf("audit: signing record: %w", err)
+	}
+	rec.Sig = s
+	return nil
+}
+
+// verifyRecord replays one record against the previous chain state: sequence
+// continuity, chain linkage, hash recomputation, and signature. Shared by the
+// file and store verifiers. n is the 1-based record position for error text.
+func verifyRecord(rec Record, pub crypto.PublicKey, alg pkix.Algorithm, prevHash string, prevSeq uint64, n int) error {
+	if rec.Seq != prevSeq+1 {
+		return fmt.Errorf("audit: record %d: sequence gap (%d after %d)", n, rec.Seq, prevSeq)
+	}
+	if prevHash != "" && rec.PrevHash != prevHash {
+		return fmt.Errorf("audit: record %d: chain break", n)
+	}
+	sum, err := chainHash(rec)
+	if err != nil {
+		return fmt.Errorf("audit: record %d: %w", n, err)
+	}
+	if hex.EncodeToString(sum) != rec.Hash {
+		return fmt.Errorf("audit: record %d: hash mismatch (tampered)", n)
+	}
+	if err := pkix.VerifyRawSignature(pub, alg, sum, rec.Sig); err != nil {
+		return fmt.Errorf("audit: record %d: signature invalid: %w", n, err)
+	}
+	return nil
+}
+
 // Log appends a record: assigns seq/time/chain fields, hashes, signs, writes,
 // and fsyncs before returning.
 func (l *Log) Log(_ context.Context, rec Record) error {
@@ -148,25 +220,9 @@ func (l *Log) Log(_ context.Context, rec Record) error {
 	rec.PrevHash = l.head
 	rec.KeyID = l.keyID
 
-	canon, err := canonical(rec)
-	if err != nil {
+	if err := sealRecord(&rec, l.signer); err != nil {
 		return err
 	}
-	prev, err := hex.DecodeString(rec.PrevHash)
-	if err != nil {
-		return fmt.Errorf("audit: corrupt chain head: %w", err)
-	}
-	h := sha256.New()
-	h.Write(prev)
-	h.Write(canon)
-	sum := h.Sum(nil)
-	rec.Hash = hex.EncodeToString(sum)
-
-	sig, err := l.signer.Sign(rand.Reader, sum, crypto.Hash(0))
-	if err != nil {
-		return fmt.Errorf("audit: signing record: %w", err)
-	}
-	rec.Sig = sig
 
 	line, err := json.Marshal(rec)
 	if err != nil {
@@ -223,29 +279,8 @@ func Verify(path string, pub crypto.PublicKey) (int, error) {
 		if err := dec.Decode(&rec); err != nil {
 			return count, fmt.Errorf("audit: record %d: corrupt JSON: %w", count+1, err)
 		}
-		if rec.Seq != prevSeq+1 {
-			return count, fmt.Errorf("audit: record %d: sequence gap (%d after %d)", count+1, rec.Seq, prevSeq)
-		}
-		if prevHash != "" && rec.PrevHash != prevHash {
-			return count, fmt.Errorf("audit: record %d: chain break", count+1)
-		}
-		canon, err := canonical(rec)
-		if err != nil {
+		if err := verifyRecord(rec, pub, alg, prevHash, prevSeq, count+1); err != nil {
 			return count, err
-		}
-		prev, err := hex.DecodeString(rec.PrevHash)
-		if err != nil {
-			return count, fmt.Errorf("audit: record %d: bad prev_hash: %w", count+1, err)
-		}
-		h := sha256.New()
-		h.Write(prev)
-		h.Write(canon)
-		sum := h.Sum(nil)
-		if hex.EncodeToString(sum) != rec.Hash {
-			return count, fmt.Errorf("audit: record %d: hash mismatch (tampered)", count+1)
-		}
-		if err := pkix.VerifyRawSignature(pub, alg, sum, rec.Sig); err != nil {
-			return count, fmt.Errorf("audit: record %d: signature invalid: %w", count+1, err)
 		}
 		prevHash = rec.Hash
 		prevSeq = rec.Seq

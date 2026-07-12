@@ -11,6 +11,7 @@ import (
 
 	"github.com/mnemoshare/mnemoca/internal/audit"
 	"github.com/mnemoshare/mnemoca/internal/pkix"
+	"github.com/mnemoshare/mnemoca/internal/store"
 )
 
 var advActor = audit.Actor{Type: "operator", ID: "adversary-test"}
@@ -99,14 +100,14 @@ func TestProfileAllowedKeyAlgs(t *testing.T) {
 
 	// Restrict the default profile to ml-dsa-65 only, writing the tenant back
 	// through the store (no public profile-update API in v0).
-	tn, err := env.Manager.GetTenant("t1")
+	tn, err := env.Manager.GetTenant(ctx, "t1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	p := tn.Profiles["default"]
 	p.AllowedKeyAlgs = []pkix.Algorithm{pkix.MLDSA65}
 	tn.Profiles["default"] = p
-	if err := env.Store.PutJSON(tenantsBucket, "t1", tn); err != nil {
+	if err := store.PutJSON(ctx, env.Store, tenantsBucket, "t1", tn); err != nil {
 		t.Fatal(err)
 	}
 

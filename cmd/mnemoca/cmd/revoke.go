@@ -15,7 +15,7 @@ var revokeCmd = &cobra.Command{
 	Short: "Revoke an issued certificate",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		env, err := openEnv()
+		env, err := openEnv(cmd.Context())
 		if err != nil {
 			return err
 		}

@@ -160,11 +160,22 @@ func (s *Softkey) Destroy(_ context.Context, ref KeyRef) error {
 }
 
 func (s *Softkey) seal(alg pkix.Algorithm, plaintext []byte) (*envelope, error) {
+	return sealEnvelope(s.passphrase, alg, plaintext)
+}
+
+func (s *Softkey) unseal(env *envelope) ([]byte, error) {
+	return unsealEnvelope(s.passphrase, env)
+}
+
+// sealEnvelope encrypts key material under a passphrase-derived key. It is
+// shared by the softkey (file) and storekey (store document) backends — same
+// envelope format either way (ADR-0005, ADR-0010).
+func sealEnvelope(passphrase []byte, alg pkix.Algorithm, plaintext []byte) (*envelope, error) {
 	salt := make([]byte, 32)
 	if _, err := rand.Read(salt); err != nil {
 		return nil, err
 	}
-	kek, err := scrypt.Key(s.passphrase, salt, scryptN, scryptR, scryptP, 32)
+	kek, err := scrypt.Key(passphrase, salt, scryptN, scryptR, scryptP, 32)
 	if err != nil {
 		return nil, err
 	}
@@ -192,11 +203,12 @@ func (s *Softkey) seal(alg pkix.Algorithm, plaintext []byte) (*envelope, error) 
 	}, nil
 }
 
-func (s *Softkey) unseal(env *envelope) ([]byte, error) {
+// unsealEnvelope reverses sealEnvelope.
+func unsealEnvelope(passphrase []byte, env *envelope) ([]byte, error) {
 	if env.KDF != "scrypt" || env.Version != 1 {
 		return nil, fmt.Errorf("softkey: unsupported envelope version/KDF")
 	}
-	kek, err := scrypt.Key(s.passphrase, env.Salt, env.ScryptN, env.ScryptR, env.ScryptP, 32)
+	kek, err := scrypt.Key(passphrase, env.Salt, env.ScryptN, env.ScryptR, env.ScryptP, 32)
 	if err != nil {
 		return nil, err
 	}

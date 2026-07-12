@@ -110,7 +110,7 @@ mnemoshare-ca/
 │   ├── acme/               # RFC 8555 server subset + EAB
 │   ├── api/                # REST API (chi or stdlib mux), authn (API keys / mTLS)
 │   ├── audit/              # Hash-chained signed audit log
-│   └── store/              # Storage: bbolt (default, single-file) + interface for Mongo/Postgres
+│   └── store/              # Storage: bbolt (default, single-file) + MongoDB via goodm (HA, ADR-0010)
 ├── pkg/
 │   └── mnemoca/            # Public Go client library (used by app/ and third parties)
 ├── docs/adr/               # Architecture Decision Records
@@ -181,6 +181,7 @@ replays the chain. Export hooks (syslog/webhook) reuse MnemoShare SIEM conventio
 | **3 — ACME** | RFC 8555 subset + EAB | cert-manager (ACME issuer) obtains a cert end-to-end against MnemoCA in kind |
 | **4 — MnemoShare integration** | `mnemocli ca` subcommands in `../app`; hardware-mTLS backend option `mnemoca` alongside step-ca/vault; provisioner tenant step | Dev namespace runs MnemoCA-issued mTLS |
 | **5 — Hardening / OSS release** | pkcs11/kms backends, FIPS mode docs, Helm chart, fuzzing DER parsers, security review | Public repo, Artifact Hub chart, tagged v0.1.0 |
+| **HA storage** (ADR-0010) — ✅ done | `store.Store` interface; MongoDB backend via goodm; store-backed keys (`storekey`) and audit chain; `--db bolt\|mongo` | ✅ Conformance suite passes on both backends; end-to-end (init → issue → revoke → CRL → audit verify) runs against MongoDB; replicas stateless in mongo mode |
 
 Phases 0–3 live entirely in this repo and are what "(c) implement the code" covers
 first. Phase 4 touches `app/` and `mnemo-provisioner/` and lands as separate PRs.

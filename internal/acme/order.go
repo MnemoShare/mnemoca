@@ -1,6 +1,7 @@
 package acme
 
 import (
+	"context"
 	"crypto"
 	"encoding/base64"
 	"encoding/json"
@@ -79,17 +80,17 @@ func (s *server) handleNewOrder(w http.ResponseWriter, r *http.Request, req *jws
 				return err
 			}
 			ch := challenge{ID: chID, AuthzID: azID, Type: typ, Token: token, Status: statusPending}
-			if err := s.st.PutJSON(challengesBucket(req.tenant), chID, &ch); err != nil {
+			if err := store.PutJSON(r.Context(), s.st, challengesBucket(req.tenant), chID, &ch); err != nil {
 				return fmt.Errorf("acme: storing challenge: %w", err)
 			}
 			az.ChallengeIDs = append(az.ChallengeIDs, chID)
 		}
-		if err := s.st.PutJSON(authzsBucket(req.tenant), azID, &az); err != nil {
+		if err := store.PutJSON(r.Context(), s.st, authzsBucket(req.tenant), azID, &az); err != nil {
 			return fmt.Errorf("acme: storing authorization: %w", err)
 		}
 		o.AuthzIDs = append(o.AuthzIDs, azID)
 	}
-	if err := s.st.PutJSON(ordersBucket(req.tenant), orderID, &o); err != nil {
+	if err := store.PutJSON(r.Context(), s.st, ordersBucket(req.tenant), orderID, &o); err != nil {
 		return fmt.Errorf("acme: storing order: %w", err)
 	}
 	if err := s.audit(r, req.tenant, "acme.order.new", acct.ID, audit.Object{Type: "acme-order", ID: orderID},
@@ -103,7 +104,7 @@ func (s *server) handleNewOrder(w http.ResponseWriter, r *http.Request, req *jws
 
 // handleOrder serves order status via POST-as-GET.
 func (s *server) handleOrder(w http.ResponseWriter, r *http.Request, req *jwsRequest) error {
-	o, err := s.loadOrder(req, r.PathValue("id"))
+	o, err := s.loadOrder(r.Context(), req, r.PathValue("id"))
 	if err != nil {
 		return err
 	}
@@ -116,7 +117,7 @@ func (s *server) handleOrder(w http.ResponseWriter, r *http.Request, req *jwsReq
 // and issue through the tenant's default profile — the same internal/ca path
 // as the REST API, so audit and profile enforcement stay uniform (ADR-0007).
 func (s *server) handleFinalize(w http.ResponseWriter, r *http.Request, req *jwsRequest) error {
-	o, err := s.loadOrder(req, r.PathValue("id"))
+	o, err := s.loadOrder(r.Context(), req, r.PathValue("id"))
 	if err != nil {
 		return err
 	}
@@ -166,12 +167,12 @@ func (s *server) handleFinalize(w http.ResponseWriter, r *http.Request, req *jws
 		ChainPEM:  pkix.EncodeChainPEM(issued[0].Path),
 		CreatedAt: time.Now().UTC(),
 	}
-	if err := s.st.PutJSON(certsBucket(req.tenant), certID, &sc); err != nil {
+	if err := store.PutJSON(r.Context(), s.st, certsBucket(req.tenant), certID, &sc); err != nil {
 		return fmt.Errorf("acme: storing certificate: %w", err)
 	}
 	o.Status = statusValid
 	o.CertID = certID
-	if err := s.st.PutJSON(ordersBucket(req.tenant), o.ID, o); err != nil {
+	if err := store.PutJSON(r.Context(), s.st, ordersBucket(req.tenant), o.ID, o); err != nil {
 		return fmt.Errorf("acme: updating order: %w", err)
 	}
 	if err := s.audit(r, req.tenant, "acme.order.finalize", req.account.ID, audit.Object{Type: "acme-order", ID: o.ID},
@@ -187,7 +188,7 @@ func (s *server) handleFinalize(w http.ResponseWriter, r *http.Request, req *jws
 func (s *server) handleCert(w http.ResponseWriter, r *http.Request, req *jwsRequest) error {
 	id := r.PathValue("id")
 	var sc storedCert
-	if err := s.st.GetJSON(certsBucket(req.tenant), id, &sc); err != nil {
+	if err := store.GetJSON(r.Context(), s.st, certsBucket(req.tenant), id, &sc); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return errf(http.StatusNotFound, "malformed", "unknown certificate %q", id)
 		}
@@ -228,7 +229,7 @@ func (s *server) handleRevoke(w http.ResponseWriter, r *http.Request, req *jwsRe
 	var actorID string
 	if req.account != nil {
 		owned := false
-		err := store.ForEachJSON(s.st, certsBucket(req.tenant), func(_ string, sc storedCert) error {
+		err := store.ForEachJSON(r.Context(), s.st, certsBucket(req.tenant), func(_ string, sc storedCert) error {
 			if sc.Serial == serial && sc.AccountID == req.account.ID {
 				owned = true
 			}
@@ -270,9 +271,9 @@ func (s *server) handleRevoke(w http.ResponseWriter, r *http.Request, req *jwsRe
 
 // loadOrder loads an order and enforces account ownership (object URLs are
 // capability URLs bound to the account, ADR-0007).
-func (s *server) loadOrder(req *jwsRequest, id string) (*order, error) {
+func (s *server) loadOrder(ctx context.Context, req *jwsRequest, id string) (*order, error) {
 	var o order
-	if err := s.st.GetJSON(ordersBucket(req.tenant), id, &o); err != nil {
+	if err := store.GetJSON(ctx, s.st, ordersBucket(req.tenant), id, &o); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, errf(http.StatusNotFound, "malformed", "unknown order %q", id)
 		}

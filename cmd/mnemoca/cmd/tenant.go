@@ -25,7 +25,7 @@ var tenantCreateCmd = &cobra.Command{
 	Short: "Create a tenant with its issuing CA(s)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		env, err := openEnv()
+		env, err := openEnv(cmd.Context())
 		if err != nil {
 			return err
 		}
@@ -51,13 +51,13 @@ var tenantListCmd = &cobra.Command{
 	Short: "List tenants",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		env, err := openEnv()
+		env, err := openEnv(cmd.Context())
 		if err != nil {
 			return err
 		}
 		defer func() { _ = env.Close() }()
 
-		tenants, err := env.Manager.ListTenants()
+		tenants, err := env.Manager.ListTenants(cmd.Context())
 		if err != nil {
 			return err
 		}
@@ -80,13 +80,13 @@ var tenantShowCmd = &cobra.Command{
 	Short: "Show a tenant and its issuing certificate(s)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		env, err := openEnv()
+		env, err := openEnv(cmd.Context())
 		if err != nil {
 			return err
 		}
 		defer func() { _ = env.Close() }()
 
-		t, err := env.Manager.GetTenant(args[0])
+		t, err := env.Manager.GetTenant(cmd.Context(), args[0])
 		if err != nil {
 			return err
 		}

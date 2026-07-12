@@ -31,7 +31,7 @@ var serveCmd = &cobra.Command{
 		if (serveTLSCert == "") != (serveTLSKey == "") {
 			return fmt.Errorf("--tls-cert and --tls-key must be set together")
 		}
-		env, err := openEnv()
+		env, err := openEnv(cmd.Context())
 		if err != nil {
 			return err
 		}

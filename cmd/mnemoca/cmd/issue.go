@@ -42,7 +42,7 @@ var issueCmd = &cobra.Command{
 			}
 		}
 
-		env, err := openEnv()
+		env, err := openEnv(cmd.Context())
 		if err != nil {
 			return err
 		}

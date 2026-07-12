@@ -25,7 +25,7 @@ type Options struct {
 // other client.
 type server struct {
 	mgr  *ca.Manager
-	st   *store.Store
+	st   store.Store
 	log  audit.Logger
 	opts Options
 	mux  *http.ServeMux
@@ -38,7 +38,7 @@ type server struct {
 
 // New returns the ACME handler. It is mounted at "/" and owns all paths
 // under /acme/.
-func New(mgr *ca.Manager, st *store.Store, log audit.Logger, opts Options) http.Handler {
+func New(mgr *ca.Manager, st store.Store, log audit.Logger, opts Options) http.Handler {
 	opts.ExternalURL = strings.TrimRight(opts.ExternalURL, "/")
 	s := &server{
 		mgr:        mgr,
@@ -85,7 +85,7 @@ func (s *server) requestURL(r *http.Request) string {
 // checkTenant resolves the {tenant} path value against the CA engine.
 func (s *server) checkTenant(r *http.Request) (string, error) {
 	tenant := r.PathValue("tenant")
-	if _, err := s.mgr.GetTenant(tenant); err != nil {
+	if _, err := s.mgr.GetTenant(r.Context(), tenant); err != nil {
 		return "", errf(http.StatusNotFound, "malformed", "unknown tenant %q", tenant)
 	}
 	return tenant, nil
@@ -115,7 +115,7 @@ func (s *server) post(allowJWK bool, fn func(w http.ResponseWriter, r *http.Requ
 		}
 		// Every POST response carries a fresh nonce, including errors, so
 		// clients can retry badNonce failures (RFC 8555 §6.5).
-		if err := s.issueNonce(w, tenant); err != nil {
+		if err := s.issueNonce(r.Context(), w, tenant); err != nil {
 			writeError(w, err)
 			return
 		}
@@ -143,16 +143,16 @@ func (s *server) handleDirectory(w http.ResponseWriter, _ *http.Request, tenant 
 	})
 }
 
-func (s *server) handleNewNonceHead(w http.ResponseWriter, _ *http.Request, tenant string) {
-	if err := s.issueNonce(w, tenant); err != nil {
+func (s *server) handleNewNonceHead(w http.ResponseWriter, r *http.Request, tenant string) {
+	if err := s.issueNonce(r.Context(), w, tenant); err != nil {
 		writeError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
 }
 
-func (s *server) handleNewNonceGet(w http.ResponseWriter, _ *http.Request, tenant string) {
-	if err := s.issueNonce(w, tenant); err != nil {
+func (s *server) handleNewNonceGet(w http.ResponseWriter, r *http.Request, tenant string) {
+	if err := s.issueNonce(r.Context(), w, tenant); err != nil {
 		writeError(w, err)
 		return
 	}

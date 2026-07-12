@@ -4,6 +4,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -20,6 +21,9 @@ import (
 var (
 	flagDataDir        string
 	flagPassphraseFile string
+	flagDB             string
+	flagMongoURI       string
+	flagMongoDB        string
 )
 
 // RootCmd is the mnemoca root command.
@@ -35,6 +39,20 @@ func init() {
 		"CA data directory (default $MNEMOCA_DATA or ./mnemoca-data)")
 	RootCmd.PersistentFlags().StringVar(&flagPassphraseFile, "passphrase-file", "",
 		"file containing the key-encryption passphrase (default $MNEMOCA_PASSPHRASE)")
+	RootCmd.PersistentFlags().StringVar(&flagDB, "db", envOr("MNEMOCA_DB", "bolt"),
+		"storage backend: bolt (embedded, single node) or mongo (HA) (default $MNEMOCA_DB or bolt)")
+	RootCmd.PersistentFlags().StringVar(&flagMongoURI, "mongo-uri", os.Getenv("MNEMOCA_MONGO_URI"),
+		"MongoDB connection URI for --db mongo (default $MNEMOCA_MONGO_URI)")
+	RootCmd.PersistentFlags().StringVar(&flagMongoDB, "mongo-db", envOr("MNEMOCA_MONGO_DATABASE", "mnemoca"),
+		"MongoDB database name for --db mongo (default $MNEMOCA_MONGO_DATABASE or mnemoca)")
+}
+
+// envOr returns the environment variable value or a fallback.
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
 
 // Execute runs the CLI.
@@ -44,12 +62,7 @@ func Execute() {
 	}
 }
 
-func defaultDataDir() string {
-	if v := os.Getenv("MNEMOCA_DATA"); v != "" {
-		return v
-	}
-	return "./mnemoca-data"
-}
+func defaultDataDir() string { return envOr("MNEMOCA_DATA", "./mnemoca-data") }
 
 // passphrase resolves the softkey passphrase from --passphrase-file or
 // $MNEMOCA_PASSPHRASE.
@@ -67,15 +80,22 @@ func passphrase() ([]byte, error) {
 	return nil, fmt.Errorf("no passphrase: set --passphrase-file or $MNEMOCA_PASSPHRASE")
 }
 
-// openEnv opens the CA data directory. Callers must Close it.
-func openEnv() (*ca.Env, error) {
+// openEnv opens the CA environment per the persistent storage flags.
+// Callers must Close it.
+func openEnv(ctx context.Context) (*ca.Env, error) {
 	pass, err := passphrase()
 	if err != nil {
 		return nil, err
 	}
-	env, err := ca.OpenEnv(flagDataDir, pass)
+	env, err := ca.OpenEnvConfig(ctx, ca.Config{
+		Dir:        flagDataDir,
+		Passphrase: pass,
+		DB:         flagDB,
+		MongoURI:   flagMongoURI,
+		MongoDB:    flagMongoDB,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("opening data dir %s: %w", flagDataDir, err)
+		return nil, fmt.Errorf("opening CA environment (%s): %w", flagDB, err)
 	}
 	return env, nil
 }

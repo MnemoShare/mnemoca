@@ -103,6 +103,20 @@ Composite profiles track the IETF LAMPS draft and are version-stamped; they
 will change when the RFC publishes. Parallel-chain hybrid (`--pair-alg` +
 `--chain both`) is the supported hybrid mode.
 
+## High availability
+
+MnemoCA has exactly two storage backends behind one small interface
+(ADR-0010). The default, `--db bolt`, keeps everything in the data directory
+(embedded bbolt, file-encrypted keys, JSONL audit log) — simple, but
+single-writer, so run one replica. For HA, `--db mongo` (with `--mongo-uri`
+and `--mongo-db`, or `$MNEMOCA_DB`, `$MNEMOCA_MONGO_URI`,
+`$MNEMOCA_MONGO_DATABASE`) moves documents, the encrypted key envelopes
+(`storekey` backend, same scrypt + AES-256-GCM format), and the hash-chained
+audit log into MongoDB: audit appends serialize across replicas by
+compare-and-swap on the chain head, ACME nonces become atomic takes, and CRL
+numbers are atomic counters — so replicas are stateless and `replicas: N`
+just works.
+
 ## FIPS 140-3 / 203 / 204
 
 MnemoCA is built and shipped FIPS-first:
@@ -163,7 +177,7 @@ internal/signer    pluggable signing backends (softkey; pkcs11/kms stubs)
 internal/acme      RFC 8555 server subset + EAB
 internal/api       REST API
 internal/audit     hash-chained, ML-DSA-signed audit log
-internal/store     embedded bbolt store
+internal/store     storage interface: embedded bbolt (default) + MongoDB (HA)
 ```
 
 ## Status

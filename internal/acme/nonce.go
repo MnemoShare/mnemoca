@@ -1,6 +1,7 @@
 package acme
 
 import (
+	"context"
 	"crypto/rand"
 	"errors"
 	"fmt"
@@ -20,13 +21,13 @@ type nonceRec struct {
 
 // issueNonce mints a fresh single-use nonce, persists it, and sets the
 // Replay-Nonce response header.
-func (s *server) issueNonce(w http.ResponseWriter, tenant string) error {
+func (s *server) issueNonce(ctx context.Context, w http.ResponseWriter, tenant string) error {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return fmt.Errorf("acme: generating nonce: %w", err)
 	}
 	n := rawB64(b[:])
-	if err := s.st.PutJSON(nonceBucket(tenant), n, nonceRec{Expires: time.Now().Add(nonceTTL)}); err != nil {
+	if err := store.PutJSON(ctx, s.st, nonceBucket(tenant), n, nonceRec{Expires: time.Now().Add(nonceTTL)}); err != nil {
 		return fmt.Errorf("acme: storing nonce: %w", err)
 	}
 	w.Header().Set("Replay-Nonce", n)
@@ -34,22 +35,20 @@ func (s *server) issueNonce(w http.ResponseWriter, tenant string) error {
 	return nil
 }
 
-// consumeNonce deletes n and reports whether it existed and was unexpired.
-// Expired nonces are deleted on sight.
-func (s *server) consumeNonce(tenant, n string) (bool, error) {
+// consumeNonce atomically takes n out of the store and reports whether it
+// existed and was unexpired. The single atomic Take (instead of get-then-
+// delete) is what makes each nonce single-use even across replicas.
+func (s *server) consumeNonce(ctx context.Context, tenant, n string) (bool, error) {
 	if n == "" {
 		return false, nil
 	}
 	var rec nonceRec
-	err := s.st.GetJSON(nonceBucket(tenant), n, &rec)
+	err := store.TakeJSON(ctx, s.st, nonceBucket(tenant), n, &rec)
 	if errors.Is(err, store.ErrNotFound) {
 		return false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("acme: loading nonce: %w", err)
-	}
-	if err := s.st.Delete(nonceBucket(tenant), n); err != nil {
-		return false, fmt.Errorf("acme: deleting nonce: %w", err)
+		return false, fmt.Errorf("acme: taking nonce: %w", err)
 	}
 	return time.Now().Before(rec.Expires), nil
 }

@@ -48,7 +48,7 @@ func (s *server) actor(k *apiKey, r *http.Request) audit.Actor {
 
 // createKey mints and stores a new API key, returning the plaintext bearer
 // token (shown once) and the stored record.
-func (s *server) createKey(role, tenant string) (string, *apiKey, error) {
+func (s *server) createKey(ctx context.Context, role, tenant string) (string, *apiKey, error) {
 	idBytes := make([]byte, 8)
 	if _, err := rand.Read(idBytes); err != nil {
 		return "", nil, err
@@ -67,7 +67,7 @@ func (s *server) createKey(role, tenant string) (string, *apiKey, error) {
 		Tenant:    tenant,
 		CreatedAt: time.Now().UTC(),
 	}
-	if err := s.env.Store.PutJSON(apiKeysBucket, id, &key); err != nil {
+	if err := store.PutJSON(ctx, s.env.Store, apiKeysBucket, id, &key); err != nil {
 		return "", nil, err
 	}
 	return keyPrefix + id + "_" + secret, &key, nil
@@ -76,8 +76,9 @@ func (s *server) createKey(role, tenant string) (string, *apiKey, error) {
 // bootstrapKey generates the first operator key when none exist, printing the
 // plaintext once to stderr (the only time it is ever available).
 func (s *server) bootstrapKey() error {
+	ctx := context.Background()
 	exists := false
-	err := store.ForEachJSON(s.env.Store, apiKeysBucket, func(string, apiKey) error {
+	err := store.ForEachJSON(ctx, s.env.Store, apiKeysBucket, func(string, apiKey) error {
 		exists = true
 		return nil
 	})
@@ -87,14 +88,14 @@ func (s *server) bootstrapKey() error {
 	if exists {
 		return nil
 	}
-	plaintext, key, err := s.createKey(roleOperator, "")
+	plaintext, key, err := s.createKey(ctx, roleOperator, "")
 	if err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr,
 		"mnemoca: generated bootstrap operator API key (store it now; it will not be shown again):\n  %s\n",
 		plaintext)
-	return s.env.Manager.Audit.Log(context.Background(), audit.Record{
+	return s.env.Manager.Audit.Log(ctx, audit.Record{
 		Actor:  audit.Actor{Type: "system", ID: "mnemoca"},
 		Action: "apikey.create",
 		Object: audit.Object{Type: "apikey", ID: key.ID},
@@ -120,7 +121,7 @@ func (s *server) authenticate(r *http.Request) (*apiKey, error) {
 		return nil, errUnauthorized
 	}
 	var key apiKey
-	if err := s.env.Store.GetJSON(apiKeysBucket, id, &key); err != nil {
+	if err := store.GetJSON(r.Context(), s.env.Store, apiKeysBucket, id, &key); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, errUnauthorized
 		}

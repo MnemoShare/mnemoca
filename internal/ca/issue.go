@@ -36,7 +36,7 @@ type IssueRequest struct {
 // selected chain(s). The certificate is not returned until its audit record
 // is durable (write-ahead auditing, ADR-0008).
 func (m *Manager) Issue(ctx context.Context, req IssueRequest) ([]Issued, error) {
-	t, err := m.GetTenant(req.Tenant)
+	t, err := m.GetTenant(ctx, req.Tenant)
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +95,7 @@ func (m *Manager) Issue(ctx context.Context, req IssueRequest) ([]Issued, error)
 		return nil, fmt.Errorf("ca: invalid chain %q", chain)
 	}
 
-	root, err := m.Root()
+	root, err := m.Root(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -170,7 +170,7 @@ func (m *Manager) issueOne(ctx context.Context, t *Tenant, root *RootInfo, profi
 		NotAfter:  cert.X509.NotAfter,
 		PEM:       pkix.EncodeCertificatePEM(cert),
 	}
-	if err := m.Store.PutJSON(certsBucket(t.ID), rec.Serial, &rec); err != nil {
+	if err := store.PutJSON(ctx, m.Store, certsBucket(t.ID), rec.Serial, &rec); err != nil {
 		return nil, err
 	}
 	// Write-ahead audit: the caller never sees a certificate whose issuance
@@ -207,7 +207,7 @@ func sanSummary(csr *pkix.CertificateRequest) []string {
 
 // Revoke marks a certificate revoked. reasonCode follows RFC 5280 §5.3.1.
 func (m *Manager) Revoke(ctx context.Context, tenant, serial string, reasonCode int, actor audit.Actor) error {
-	err := store.UpdateJSON(m.Store, certsBucket(tenant), serial, false, func(rec *CertRecord) error {
+	err := store.UpdateJSON(ctx, m.Store, certsBucket(tenant), serial, false, func(rec *CertRecord) error {
 		if rec.Revoked {
 			return fmt.Errorf("ca: certificate %s already revoked", serial)
 		}
@@ -232,12 +232,12 @@ func (m *Manager) Revoke(ctx context.Context, tenant, serial string, reasonCode 
 }
 
 // ListCertificates returns all issued certificate records for a tenant.
-func (m *Manager) ListCertificates(tenant string) ([]CertRecord, error) {
-	if _, err := m.GetTenant(tenant); err != nil {
+func (m *Manager) ListCertificates(ctx context.Context, tenant string) ([]CertRecord, error) {
+	if _, err := m.GetTenant(ctx, tenant); err != nil {
 		return nil, err
 	}
 	var out []CertRecord
-	err := store.ForEachJSON(m.Store, certsBucket(tenant), func(_ string, rec CertRecord) error {
+	err := store.ForEachJSON(ctx, m.Store, certsBucket(tenant), func(_ string, rec CertRecord) error {
 		out = append(out, rec)
 		return nil
 	})
@@ -245,9 +245,9 @@ func (m *Manager) ListCertificates(tenant string) ([]CertRecord, error) {
 }
 
 // GetCertificate loads one certificate record.
-func (m *Manager) GetCertificate(tenant, serial string) (*CertRecord, error) {
+func (m *Manager) GetCertificate(ctx context.Context, tenant, serial string) (*CertRecord, error) {
 	var rec CertRecord
-	if err := m.Store.GetJSON(certsBucket(tenant), serial, &rec); err != nil {
+	if err := store.GetJSON(ctx, m.Store, certsBucket(tenant), serial, &rec); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, fmt.Errorf("ca: unknown certificate %s in tenant %s", serial, tenant)
 		}
@@ -259,7 +259,7 @@ func (m *Manager) GetCertificate(tenant, serial string) (*CertRecord, error) {
 // BuildCRL signs a fresh CRL for the tenant's chain covering all revoked
 // certificates. nextUpdate defaults to 24h.
 func (m *Manager) BuildCRL(ctx context.Context, tenant string, chain Chain, actor audit.Actor) (*pkix.CRL, error) {
-	t, err := m.GetTenant(tenant)
+	t, err := m.GetTenant(ctx, tenant)
 	if err != nil {
 		return nil, err
 	}
@@ -280,7 +280,7 @@ func (m *Manager) BuildCRL(ctx context.Context, tenant string, chain Chain, acto
 	}
 
 	var revoked []pkix.RevokedEntry
-	err = store.ForEachJSON(m.Store, certsBucket(tenant), func(_ string, rec CertRecord) error {
+	err = store.ForEachJSON(ctx, m.Store, certsBucket(tenant), func(_ string, rec CertRecord) error {
 		if !rec.Revoked || rec.Chain != chainOrPrimary(chain) {
 			return nil
 		}
@@ -299,7 +299,7 @@ func (m *Manager) BuildCRL(ctx context.Context, tenant string, chain Chain, acto
 		return nil, err
 	}
 
-	num, err := m.Store.NextSeq(crlBucket(tenant))
+	num, err := m.Store.NextSeq(ctx, crlBucket(tenant))
 	if err != nil {
 		return nil, err
 	}

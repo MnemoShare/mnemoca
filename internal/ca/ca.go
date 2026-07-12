@@ -97,7 +97,7 @@ type Issued struct {
 
 // Manager is the CA engine.
 type Manager struct {
-	Store   *store.Store
+	Store   store.Store
 	Signers *signer.Registry
 	Audit   audit.Logger
 	Backend string // backend used for new keys ("softkey" in v0)
@@ -128,9 +128,9 @@ type InitOptions struct {
 }
 
 // Root loads the root domain metadata.
-func (m *Manager) Root() (*RootInfo, error) {
+func (m *Manager) Root(ctx context.Context) (*RootInfo, error) {
 	var info RootInfo
-	if err := m.Store.GetJSON(metaBucket, "root", &info); err != nil {
+	if err := store.GetJSON(ctx, m.Store, metaBucket, "root", &info); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, fmt.Errorf("ca: not initialized (run `mnemoca init`)")
 		}
@@ -183,7 +183,7 @@ func (m *Manager) newRootCert(name string, alg pkix.Algorithm, validity time.Dur
 // hybrid pair), and the audit key. Fails if already initialized.
 func (m *Manager) InitRoot(ctx context.Context, opts InitOptions) (*RootInfo, error) {
 	var existing RootInfo
-	if err := m.Store.GetJSON(metaBucket, "root", &existing); err == nil {
+	if err := store.GetJSON(ctx, m.Store, metaBucket, "root", &existing); err == nil {
 		return nil, fmt.Errorf("ca: already initialized")
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return nil, err
@@ -238,7 +238,7 @@ func (m *Manager) InitRoot(ctx context.Context, opts InitOptions) (*RootInfo, er
 	info.AuditKeyRef = auditRef
 	info.AuditPubPEM = pemPublicKey(auditPub)
 
-	if err := m.Store.PutJSON(metaBucket, "root", &info); err != nil {
+	if err := store.PutJSON(ctx, m.Store, metaBucket, "root", &info); err != nil {
 		return nil, err
 	}
 	if err := m.Audit.Log(ctx, audit.Record{
@@ -272,12 +272,12 @@ func (m *Manager) CreateTenant(ctx context.Context, id, name string, alg pkix.Al
 		return nil, fmt.Errorf("ca: invalid tenant id %q (lowercase alphanumeric and hyphens)", id)
 	}
 	var existing Tenant
-	if err := m.Store.GetJSON(tenantsBucket, id, &existing); err == nil {
+	if err := store.GetJSON(ctx, m.Store, tenantsBucket, id, &existing); err == nil {
 		return nil, fmt.Errorf("ca: tenant %q already exists", id)
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return nil, err
 	}
-	root, err := m.Root()
+	root, err := m.Root(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -347,7 +347,7 @@ func (m *Manager) CreateTenant(ctx context.Context, id, name string, alg pkix.Al
 			return nil, fmt.Errorf("ca: creating tenant pair issuing CA: %w", err)
 		}
 	}
-	if err := m.Store.PutJSON(tenantsBucket, id, &t); err != nil {
+	if err := store.PutJSON(ctx, m.Store, tenantsBucket, id, &t); err != nil {
 		return nil, err
 	}
 	if err := m.Audit.Log(ctx, audit.Record{
@@ -363,9 +363,9 @@ func (m *Manager) CreateTenant(ctx context.Context, id, name string, alg pkix.Al
 }
 
 // GetTenant loads a tenant by ID.
-func (m *Manager) GetTenant(id string) (*Tenant, error) {
+func (m *Manager) GetTenant(ctx context.Context, id string) (*Tenant, error) {
 	var t Tenant
-	if err := m.Store.GetJSON(tenantsBucket, id, &t); err != nil {
+	if err := store.GetJSON(ctx, m.Store, tenantsBucket, id, &t); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, fmt.Errorf("ca: unknown tenant %q", id)
 		}
@@ -375,9 +375,9 @@ func (m *Manager) GetTenant(id string) (*Tenant, error) {
 }
 
 // ListTenants returns all tenants.
-func (m *Manager) ListTenants() ([]Tenant, error) {
+func (m *Manager) ListTenants(ctx context.Context) ([]Tenant, error) {
 	var out []Tenant
-	err := store.ForEachJSON(m.Store, tenantsBucket, func(_ string, t Tenant) error {
+	err := store.ForEachJSON(ctx, m.Store, tenantsBucket, func(_ string, t Tenant) error {
 		out = append(out, t)
 		return nil
 	})

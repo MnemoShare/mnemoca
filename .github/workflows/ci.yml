@@ -29,6 +29,23 @@ jobs:
             go test -run '^$' -fuzz "${f}\$" -fuzztime 30s ./internal/pkix/
           done
 
+  test-mongo:
+    runs-on: ubuntu-latest
+    services:
+      mongo:
+        image: mongo:8
+        ports:
+          - 27017:27017
+    env:
+      MNEMOCA_TEST_MONGO_URI: mongodb://localhost:27017
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - name: Tests against MongoDB (store conformance, store audit, CA end-to-end)
+        run: go test ./internal/store/ ./internal/audit/ ./internal/ca/
+
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -41,7 +58,7 @@ jobs:
           version: v2.12
 
   image:
-    needs: [test, lint]
+    needs: [test, test-mongo, lint]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:

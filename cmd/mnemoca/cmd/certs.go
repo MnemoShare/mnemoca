@@ -15,13 +15,13 @@ var certsCmd = &cobra.Command{
 	Short: "List certificates issued to a tenant",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		env, err := openEnv()
+		env, err := openEnv(cmd.Context())
 		if err != nil {
 			return err
 		}
 		defer func() { _ = env.Close() }()
 
-		recs, err := env.Manager.ListCertificates(certsTenant)
+		recs, err := env.Manager.ListCertificates(cmd.Context(), certsTenant)
 		if err != nil {
 			return err
 		}

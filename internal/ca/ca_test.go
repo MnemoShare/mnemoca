@@ -10,6 +10,7 @@ import (
 
 	"github.com/mnemoshare/mnemoca/internal/audit"
 	"github.com/mnemoshare/mnemoca/internal/pkix"
+	"github.com/mnemoshare/mnemoca/internal/store/storetest"
 )
 
 func testEnv(t *testing.T) *Env {
@@ -20,6 +21,45 @@ func testEnv(t *testing.T) *Env {
 	}
 	t.Cleanup(func() { _ = env.Close() })
 	return env
+}
+
+// testEnvMongo opens a mongo-backed env against a disposable test database,
+// skipping when MongoDB is unavailable.
+func testEnvMongo(t *testing.T) *Env {
+	t.Helper()
+	uri, dbName := storetest.TempDB(t)
+	env, err := OpenEnvConfig(context.Background(), Config{
+		Dir:        t.TempDir(),
+		Passphrase: []byte("test"),
+		DB:         "mongo",
+		MongoURI:   uri,
+		MongoDB:    dbName,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = env.Close() })
+	return env
+}
+
+// verifyAuditChain replays the env's audit chain (file or store) with only
+// the audit public key and returns the record count.
+func verifyAuditChain(t *testing.T, env *Env, auditPubPEM []byte) int {
+	t.Helper()
+	pub, err := pkix.ParsePublicKeyPEM(auditPubPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if env.DB == "mongo" {
+		n, err = audit.VerifyStore(context.Background(), env.Store, pub)
+	} else {
+		n, err = audit.Verify(filepath.Join(env.Dir, "audit.log"), pub)
+	}
+	if err != nil {
+		t.Fatalf("audit verify: %v", err)
+	}
+	return n
 }
 
 func testCSR(t *testing.T, cn string, alg pkix.Algorithm) *pkix.CertificateRequest {
@@ -39,10 +79,19 @@ func testCSR(t *testing.T, cn string, alg pkix.Algorithm) *pkix.CertificateReque
 }
 
 // TestEndToEnd exercises init → tenant → issue → revoke → CRL → audit verify
-// on a hybrid (ML-DSA-87 + ECDSA P-384) root.
+// on a hybrid (ML-DSA-87 + ECDSA P-384) root, on the default bolt backend.
 func TestEndToEnd(t *testing.T) {
+	endToEnd(t, testEnv(t))
+}
+
+// TestEndToEndMongo runs the same flow with the MongoDB store, storekey
+// backend, and store-backed audit chain (ADR-0010).
+func TestEndToEndMongo(t *testing.T) {
+	endToEnd(t, testEnvMongo(t))
+}
+
+func endToEnd(t *testing.T, env *Env) {
 	ctx := context.Background()
-	env := testEnv(t)
 	actor := audit.Actor{Type: "operator", ID: "test"}
 
 	info, err := env.Init(ctx, InitOptions{
@@ -110,15 +159,8 @@ func TestEndToEnd(t *testing.T) {
 	}
 
 	// Full audit chain must verify with only the audit public key.
-	pubAny, err := pkix.ParsePublicKeyPEM(info.AuditPubPEM)
-	if err != nil {
-		t.Fatal(err)
-	}
-	n, err := audit.Verify(filepath.Join(env.Dir, "audit.log"), pubAny)
-	if err != nil {
-		t.Fatalf("audit.Verify: %v", err)
-	}
-	if n < 6 { // genesis, ca.init, tenant.create, 2x cert.issue, cert.revoke, crl.publish
+	if n := verifyAuditChain(t, env, info.AuditPubPEM); n < 6 {
+		// genesis, ca.init, tenant.create, 2x cert.issue, cert.revoke, crl.publish
 		t.Fatalf("audit records = %d", n)
 	}
 
@@ -167,15 +209,9 @@ func TestReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	info, err := env2.Manager.Root()
+	info, err := env2.Manager.Root(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	pub, err := pkix.ParsePublicKeyPEM(info.AuditPubPEM)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := audit.Verify(filepath.Join(dir, "audit.log"), pub); err != nil {
-		t.Fatalf("audit chain broken across reopen: %v", err)
-	}
+	verifyAuditChain(t, env2, info.AuditPubPEM)
 }

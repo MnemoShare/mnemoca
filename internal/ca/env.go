@@ -11,48 +11,94 @@ import (
 	"github.com/mnemoshare/mnemoca/internal/store"
 )
 
-// Env is an opened MnemoCA data directory: store, signer backends, audit
-// log, and the Manager over them. Layout:
+// Config selects and configures the storage backend (ADR-0010).
+type Config struct {
+	Dir        string // data directory (bolt file, softkey files, audit.log)
+	Passphrase []byte // key-encryption passphrase (softkey / storekey)
+	DB         string // "bolt" (default) or "mongo"
+	MongoURI   string // mongo mode: connection URI
+	MongoDB    string // mongo mode: database name (default "mnemoca")
+}
+
+// Env is an opened MnemoCA environment: store, signer backends, audit log,
+// and the Manager over them.
+//
+// bolt mode (default) uses the data directory:
 //
 //	<dir>/ca.db      bbolt store
 //	<dir>/keys/      softkey backend
 //	<dir>/audit.log  hash-chained audit log
+//
+// mongo mode (HA) keeps documents, key envelopes ("storekey"), and the audit
+// chain in MongoDB, so replicas are stateless (ADR-0010).
 type Env struct {
-	Dir     string
-	Store   *store.Store
-	Signers *signer.Registry
-	Manager *Manager
-	AuditLog *audit.Log // nil until the root (and audit key) exists
+	Dir      string
+	DB       string // backend kind: "bolt" or "mongo"
+	Store    store.Store
+	Signers  *signer.Registry
+	Manager  *Manager
+	AuditLog audit.ChainLogger // nil until the root (and audit key) exists
 }
 
-// OpenEnv opens the data directory. The audit log is only opened when the CA
-// is initialized (the audit key exists); before InitRoot, Manager.Audit is a
-// buffered bootstrap that flushes into the real log via FinishInit.
+// OpenEnv opens a bolt-backed data directory (back-compat wrapper).
 func OpenEnv(dir string, passphrase []byte) (*Env, error) {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	return OpenEnvConfig(context.Background(), Config{Dir: dir, Passphrase: passphrase})
+}
+
+// OpenEnvConfig opens the environment described by cfg. The audit log is only
+// opened when the CA is initialized (the audit key exists); before InitRoot,
+// Manager.Audit is a no-op that Init replaces with the real log.
+func OpenEnvConfig(ctx context.Context, cfg Config) (*Env, error) {
+	if cfg.DB == "" {
+		cfg.DB = "bolt"
+	}
+	if err := os.MkdirAll(cfg.Dir, 0o700); err != nil {
 		return nil, err
 	}
-	st, err := store.Open(filepath.Join(dir, "ca.db"))
+	soft, err := signer.NewSoftkey(filepath.Join(cfg.Dir, "keys"), cfg.Passphrase)
 	if err != nil {
 		return nil, err
 	}
-	soft, err := signer.NewSoftkey(filepath.Join(dir, "keys"), passphrase)
-	if err != nil {
-		_ = st.Close()
-		return nil, err
+
+	var st store.Store
+	var backend string
+	backends := []signer.Backend{soft, signer.PKCS11{}, signer.KMS{}}
+	switch cfg.DB {
+	case "bolt":
+		st, err = store.Open(filepath.Join(cfg.Dir, "ca.db"))
+		if err != nil {
+			return nil, err
+		}
+		backend = "softkey"
+	case "mongo":
+		st, err = store.OpenMongo(ctx, cfg.MongoURI, cfg.MongoDB)
+		if err != nil {
+			return nil, err
+		}
+		sk, err := signer.NewStorekey(st, cfg.Passphrase)
+		if err != nil {
+			_ = st.Close()
+			return nil, err
+		}
+		backends = append(backends, sk)
+		backend = "storekey"
+	default:
+		return nil, fmt.Errorf("ca: unknown db backend %q (want bolt or mongo)", cfg.DB)
 	}
-	reg := signer.NewRegistry(soft, signer.PKCS11{}, signer.KMS{})
+
+	reg := signer.NewRegistry(backends...)
 	env := &Env{
-		Dir:     dir,
+		Dir:     cfg.Dir,
+		DB:      cfg.DB,
 		Store:   st,
 		Signers: reg,
 	}
-	env.Manager = &Manager{Store: st, Signers: reg, Audit: audit.Nop{}, Backend: "softkey"}
+	env.Manager = &Manager{Store: st, Signers: reg, Audit: audit.Nop{}, Backend: backend}
 
 	// If already initialized, open the audit log with the audit key.
 	var info RootInfo
-	if err := st.GetJSON(metaBucket, "root", &info); err == nil {
-		if err := env.openAudit(&info); err != nil {
+	if err := store.GetJSON(ctx, st, metaBucket, "root", &info); err == nil {
+		if err := env.openAudit(ctx, &info); err != nil {
 			_ = st.Close()
 			return nil, err
 		}
@@ -60,12 +106,17 @@ func OpenEnv(dir string, passphrase []byte) (*Env, error) {
 	return env, nil
 }
 
-func (e *Env) openAudit(info *RootInfo) error {
-	auditSigner, err := e.Signers.Open(context.Background(), info.AuditKeyRef)
+func (e *Env) openAudit(ctx context.Context, info *RootInfo) error {
+	auditSigner, err := e.Signers.Open(ctx, info.AuditKeyRef)
 	if err != nil {
 		return fmt.Errorf("ca: opening audit key: %w", err)
 	}
-	log, err := audit.Open(filepath.Join(e.Dir, "audit.log"), auditSigner, "audit-1")
+	var log audit.ChainLogger
+	if e.DB == "mongo" {
+		log, err = audit.OpenStore(ctx, e.Store, auditSigner, "audit-1")
+	} else {
+		log, err = audit.Open(filepath.Join(e.Dir, "audit.log"), auditSigner, "audit-1")
+	}
 	if err != nil {
 		return err
 	}
@@ -86,7 +137,7 @@ func (e *Env) Init(ctx context.Context, opts InitOptions) (*RootInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := e.openAudit(info); err != nil {
+	if err := e.openAudit(ctx, info); err != nil {
 		return nil, err
 	}
 	if err := e.Manager.Audit.Log(ctx, audit.Record{

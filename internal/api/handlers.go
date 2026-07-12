@@ -16,8 +16,8 @@ func (s *server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 
 // handleRoots serves the root certificate(s) as a PEM bundle (trust anchor
 // distribution; both roots for hybrid instances).
-func (s *server) handleRoots(w http.ResponseWriter, _ *http.Request) {
-	root, err := s.env.Manager.Root()
+func (s *server) handleRoots(w http.ResponseWriter, r *http.Request) {
+	root, err := s.env.Manager.Root(r.Context())
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, "%v", err)
 		return
@@ -33,7 +33,7 @@ func (s *server) handleRoots(w http.ResponseWriter, _ *http.Request) {
 func (s *server) handleCRL(chain ca.Chain) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tenant := r.PathValue("tenant")
-		if _, err := s.env.Manager.GetTenant(tenant); err != nil {
+		if _, err := s.env.Manager.GetTenant(r.Context(), tenant); err != nil {
 			writeError(w, http.StatusNotFound, "%v", err)
 			return
 		}
@@ -91,8 +91,8 @@ func (s *server) handleCreateTenant(w http.ResponseWriter, r *http.Request, key 
 	writeJSON(w, http.StatusCreated, tenantView(t))
 }
 
-func (s *server) handleListTenants(w http.ResponseWriter, _ *http.Request, _ *apiKey) {
-	tenants, err := s.env.Manager.ListTenants()
+func (s *server) handleListTenants(w http.ResponseWriter, r *http.Request, _ *apiKey) {
+	tenants, err := s.env.Manager.ListTenants(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "%v", err)
 		return
@@ -105,7 +105,7 @@ func (s *server) handleListTenants(w http.ResponseWriter, _ *http.Request, _ *ap
 }
 
 func (s *server) handleGetTenant(w http.ResponseWriter, r *http.Request, _ *apiKey) {
-	t, err := s.env.Manager.GetTenant(r.PathValue("id"))
+	t, err := s.env.Manager.GetTenant(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "%v", err)
 		return
@@ -207,7 +207,7 @@ type certJSON struct {
 }
 
 func (s *server) handleListCertificates(w http.ResponseWriter, r *http.Request, _ *apiKey) {
-	recs, err := s.env.Manager.ListCertificates(r.PathValue("id"))
+	recs, err := s.env.Manager.ListCertificates(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "%v", err)
 		return
@@ -284,7 +284,7 @@ func (s *server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request, key 
 			writeError(w, http.StatusBadRequest, "tenant-role keys require a tenant")
 			return
 		}
-		if _, err := s.env.Manager.GetTenant(req.Tenant); err != nil {
+		if _, err := s.env.Manager.GetTenant(r.Context(), req.Tenant); err != nil {
 			writeError(w, http.StatusBadRequest, "%v", err)
 			return
 		}
@@ -292,7 +292,7 @@ func (s *server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request, key 
 		writeError(w, http.StatusBadRequest, "invalid role %q (want %q or %q)", req.Role, roleOperator, roleTenant)
 		return
 	}
-	plaintext, created, err := s.createKey(req.Role, req.Tenant)
+	plaintext, created, err := s.createKey(r.Context(), req.Role, req.Tenant)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "%v", err)
 		return

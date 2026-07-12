@@ -378,7 +378,7 @@ func TestACMEFlow(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("revoke status = %d: %s", resp.StatusCode, body)
 	}
-	rec, err := env.Manager.GetCertificate("t1", serial)
+	rec, err := env.Manager.GetCertificate(context.Background(), "t1", serial)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -447,7 +447,7 @@ func TestEABRequired(t *testing.T) {
 		t.Fatalf("problem = %+v", p)
 	}
 
-	kid, keyB64, err := CreateEABKey(env.Store, "t1")
+	kid, keyB64, err := CreateEABKey(context.Background(), env.Store, "t1")
 	if err != nil {
 		t.Fatal(err)
 	}
