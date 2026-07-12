@@ -103,6 +103,49 @@ Composite profiles track the IETF LAMPS draft and are version-stamped; they
 will change when the RFC publishes. Parallel-chain hybrid (`--pair-alg` +
 `--chain both`) is the supported hybrid mode.
 
+## FIPS 140-3 / 203 / 204
+
+MnemoCA is built and shipped FIPS-first:
+
+- **FIPS 204 (ML-DSA)** — all PQ issuance and the audit log signatures. The
+  implementation is the Go standard library's FIPS-module ML-DSA code
+  (via `filippo.io/mldsa` until `crypto/mldsa` lands in Go 1.27, ADR-0002).
+- **FIPS 203 (ML-KEM)** — MnemoCA's TLS listener negotiates the
+  `X25519MLKEM768` hybrid key exchange by default, including in FIPS mode.
+- **FIPS 140-3** — the Docker image is compiled against the *validated* Go
+  Cryptographic Module (`GOFIPS140=v1.0.0`, CMVP-certified) and runs with
+  `GODEBUG=fips140=on`, which enables the module's self-tests and restricts
+  TLS and classical crypto to approved algorithms. Note: the frozen v1.0.0
+  module predates ML-DSA's inclusion in the Go module; ML-DSA signing uses the
+  same code that ships in newer module versions, whose validation is tracked
+  upstream. Classical operations (ECDSA, key derivation for TLS) run inside
+  the validated module boundary.
+
+```bash
+# FIPS-enabled image (in-build: full test suite under fips140=on, then an
+# OpenSSL 3.5 interop gate that independently verifies an ML-DSA chain)
+docker build --platform linux/amd64 -t ghcr.io/mnemoshare/mnemoca:dev .
+
+docker run -v mnemoca-data:/data -p 8443:8443 \
+  -e MNEMOCA_PASSPHRASE=... ghcr.io/mnemoshare/mnemoca:dev \
+  serve --external-url https://ca.example.com
+```
+
+## Testing
+
+```bash
+GODEBUG=fips140=on go test ./...   # full suite in FIPS runtime mode
+go test -race ./...                # race detector
+golangci-lint run ./...            # lint
+
+# fuzz the attacker-facing DER parsers
+go test -run '^$' -fuzz 'FuzzParseCertificate$' -fuzztime 60s ./internal/pkix/
+```
+
+CI runs all of the above plus a 30s fuzz smoke per parser, and the image
+build itself re-runs the full suite under FIPS mode and the OpenSSL interop
+gate before a layer is ever pushed.
+
 ## Design
 
 Start with [PLAN.md](PLAN.md) and the ADRs in [docs/adr/](docs/adr/):
