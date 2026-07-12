@@ -1,0 +1,6 @@
+# Binaries and local state
+mnemoca
+dist/
+*.db
+*.log
+.DS_Store
