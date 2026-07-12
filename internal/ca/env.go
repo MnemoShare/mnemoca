@@ -62,7 +62,22 @@ func OpenEnvConfig(ctx context.Context, cfg Config) (*Env, error) {
 
 	var st store.Store
 	var backend string
-	backends := []signer.Backend{soft, signer.PKCS11{}, signer.KMS{}}
+	// PKCS#11 HSM backend: configured entirely from the environment; the
+	// unconfigured zero value stays registered so pkcs11: refs fail with a
+	// clear error instead of an unknown-backend error (see docs/hsm.md).
+	hsm := signer.Backend(signer.PKCS11{})
+	if module := os.Getenv("MNEMOCA_PKCS11_MODULE"); module != "" {
+		h, err := signer.NewPKCS11(signer.PKCS11Config{
+			ModulePath: module,
+			TokenLabel: os.Getenv("MNEMOCA_PKCS11_TOKEN"),
+			PIN:        os.Getenv("MNEMOCA_PKCS11_PIN"),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("ca: configuring pkcs11 backend: %w", err)
+		}
+		hsm = h
+	}
+	backends := []signer.Backend{soft, hsm, signer.KMS{}}
 	switch cfg.DB {
 	case "bolt":
 		st, err = store.Open(filepath.Join(cfg.Dir, "ca.db"))

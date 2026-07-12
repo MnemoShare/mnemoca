@@ -16,6 +16,7 @@ var (
 	initAlg          string
 	initPairAlg      string
 	initExperimental bool
+	initIfNeeded     bool
 )
 
 var initCmd = &cobra.Command{
@@ -28,6 +29,17 @@ var initCmd = &cobra.Command{
 			return err
 		}
 		defer func() { _ = env.Close() }()
+
+		// Idempotent mode for orchestrated deployments (Helm initContainer /
+		// hook Job): exit success if the CA already exists.
+		if initIfNeeded && env.AuditLog != nil {
+			info, err := env.Manager.Root(cmd.Context())
+			if err != nil {
+				return err
+			}
+			pf(cmd.OutOrStdout(), "CA already initialized (root %q, alg %s) — nothing to do\n", info.Name, info.Alg)
+			return nil
+		}
 
 		info, err := env.Init(cmd.Context(), ca.InitOptions{
 			Name:                  initName,
@@ -71,5 +83,7 @@ func init() {
 		"optional paired root algorithm for parallel-chain hybrid deployments")
 	initCmd.Flags().BoolVar(&initExperimental, "experimental-composite", false,
 		"allow experimental composite algorithms (draft-19)")
+	initCmd.Flags().BoolVar(&initIfNeeded, "if-needed", false,
+		"exit successfully without changes if the CA is already initialized")
 	RootCmd.AddCommand(initCmd)
 }
