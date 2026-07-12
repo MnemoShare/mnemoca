@@ -133,19 +133,20 @@ func (m *Manager) issueOne(ctx context.Context, t *Tenant, root *RootInfo, profi
 	if err != nil {
 		return nil, err
 	}
-	var eku []x509.ExtKeyUsage
-	if profile.ServerAuth {
-		eku = append(eku, x509.ExtKeyUsageServerAuth)
+	eku, err := profile.extKeyUsages()
+	if err != nil {
+		return nil, err
 	}
-	if profile.ClientAuth {
-		eku = append(eku, x509.ExtKeyUsageClientAuth)
+	keyUsage, err := profile.keyUsage()
+	if err != nil {
+		return nil, err
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber:   serial,
 		RawSubject:     req.CSR.RawSubject,
 		NotBefore:      time.Now().Add(-5 * time.Minute),
 		NotAfter:       time.Now().Add(validity),
-		KeyUsage:       x509.KeyUsageDigitalSignature,
+		KeyUsage:       keyUsage,
 		ExtKeyUsage:    eku,
 		DNSNames:       req.CSR.DNSNames,
 		EmailAddresses: req.CSR.EmailAddresses,

@@ -61,13 +61,20 @@ type Tenant struct {
 
 // Profile governs what a tenant may issue.
 type Profile struct {
-	Name            string           `json:"name"`
-	DefaultValidity time.Duration    `json:"default_validity"`
-	MaxValidity     time.Duration    `json:"max_validity"`
-	ServerAuth      bool             `json:"server_auth"`
-	ClientAuth      bool             `json:"client_auth"`
-	AllowedKeyAlgs  []pkix.Algorithm `json:"allowed_key_algs,omitempty"` // empty = any registered
-	Hybrid          Chain            `json:"hybrid,omitempty"`           // "" or ChainBoth for parallel dual issuance
+	Name            string        `json:"name"`
+	DefaultValidity time.Duration `json:"default_validity"`
+	MaxValidity     time.Duration `json:"max_validity"`
+	// ServerAuth/ClientAuth are legacy EKU shorthands, honored only when
+	// EKUs is empty.
+	ServerAuth bool `json:"server_auth,omitempty"`
+	ClientAuth bool `json:"client_auth,omitempty"`
+	// EKUs is the explicit extended-key-usage grant (ProfileEKUNames).
+	EKUs []string `json:"ekus,omitempty"`
+	// KeyUsages is the key-usage grant (ProfileKeyUsageNames); empty means
+	// digital_signature.
+	KeyUsages      []string         `json:"key_usages,omitempty"`
+	AllowedKeyAlgs []pkix.Algorithm `json:"allowed_key_algs,omitempty"` // empty = any registered
+	Hybrid         Chain            `json:"hybrid,omitempty"`           // "" or ChainBoth for parallel dual issuance
 }
 
 // CertRecord is the stored record of an issued certificate.

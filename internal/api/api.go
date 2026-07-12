@@ -54,6 +54,9 @@ func New(env *ca.Env, opts Options) http.Handler {
 	mux.HandleFunc("POST /api/v1/tenants/{id}/issue", s.authed(s.tenantScoped(s.handleIssue)))
 	mux.HandleFunc("POST /api/v1/tenants/{id}/revoke", s.authed(s.tenantScoped(s.handleRevoke)))
 	mux.HandleFunc("GET /api/v1/tenants/{id}/certificates", s.authed(s.tenantScoped(s.handleListCertificates)))
+	mux.HandleFunc("GET /api/v1/tenants/{id}/profiles", s.authed(s.tenantScoped(s.handleListProfiles)))
+	mux.HandleFunc("PUT /api/v1/tenants/{id}/profiles/{name}", s.authed(s.tenantScoped(s.handleSetProfile)))
+	mux.HandleFunc("DELETE /api/v1/tenants/{id}/profiles/{name}", s.authed(s.tenantScoped(s.handleDeleteProfile)))
 	mux.HandleFunc("GET /api/v1/algorithms", s.authed(s.handleAlgorithms))
 	mux.HandleFunc("POST /api/v1/apikeys", s.authed(s.operatorOnly(s.handleCreateAPIKey)))
 

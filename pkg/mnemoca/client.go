@@ -207,11 +207,46 @@ func (c *Client) CreateTenant(ctx context.Context, id, name, alg string, hybrid 
 
 // ListTenants lists all tenants (operator keys only).
 func (c *Client) ListTenants(ctx context.Context) ([]Tenant, error) {
-	var out []Tenant
+	var out struct {
+		Tenants []Tenant `json:"tenants"`
+	}
 	if err := c.do(ctx, http.MethodGet, "/api/v1/tenants", nil, &out); err != nil {
 		return nil, err
 	}
-	return out, nil
+	return out.Tenants, nil
+}
+
+// Profile is a tenant issuance profile. Validities are Go duration strings.
+type Profile struct {
+	Name            string   `json:"name"`
+	DefaultValidity string   `json:"default_validity"`
+	MaxValidity     string   `json:"max_validity"`
+	EKUs            []string `json:"ekus,omitempty"`
+	KeyUsages       []string `json:"key_usages,omitempty"`
+	AllowedKeyAlgs  []string `json:"allowed_key_algs,omitempty"`
+	Hybrid          string   `json:"hybrid,omitempty"`
+}
+
+// ListProfiles lists the tenant's issuance profiles.
+func (c *Client) ListProfiles(ctx context.Context, tenant string) ([]Profile, error) {
+	var out struct {
+		Profiles []Profile `json:"profiles"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/api/v1/tenants/"+tenant+"/profiles", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Profiles, nil
+}
+
+// SetProfile creates or replaces an issuance profile (p.Name selects the
+// profile; replacing "default" changes what unqualified issuance grants).
+func (c *Client) SetProfile(ctx context.Context, tenant string, p Profile) error {
+	return c.do(ctx, http.MethodPut, "/api/v1/tenants/"+tenant+"/profiles/"+p.Name, p, nil)
+}
+
+// DeleteProfile removes a named profile ("default" cannot be deleted).
+func (c *Client) DeleteProfile(ctx context.Context, tenant, name string) error {
+	return c.do(ctx, http.MethodDelete, "/api/v1/tenants/"+tenant+"/profiles/"+name, nil, nil)
 }
 
 // Issue signs a CSR under the tenant's profile rules.
@@ -234,9 +269,11 @@ func (c *Client) Revoke(ctx context.Context, tenant, serial string, reasonCode i
 
 // ListCertificates lists the tenant's issued certificate records.
 func (c *Client) ListCertificates(ctx context.Context, tenant string) ([]CertificateRecord, error) {
-	var out []CertificateRecord
+	var out struct {
+		Certificates []CertificateRecord `json:"certificates"`
+	}
 	if err := c.do(ctx, http.MethodGet, "/api/v1/tenants/"+tenant+"/certificates", nil, &out); err != nil {
 		return nil, err
 	}
-	return out, nil
+	return out.Certificates, nil
 }
