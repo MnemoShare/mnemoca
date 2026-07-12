@@ -1,6 +1,7 @@
 # Binaries and local state
-mnemoca
+/mnemoca
 dist/
 *.db
 *.log
 .DS_Store
+mnemoca-data/
