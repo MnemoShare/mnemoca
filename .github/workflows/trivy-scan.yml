@@ -1,0 +1,58 @@
+name: Trivy Security Scan
+
+# Recurring dependency (CVE), secret, and misconfiguration scanning for SOC 2
+# CTRL-652 (vulnerability management). Report-first: HIGH/CRITICAL fixable
+# findings are surfaced in the run log and the job summary but do NOT fail the
+# build yet. Flip `exit-code` to '1' to enforce once the initial backlog is
+# triaged. Complements (does not replace) any container image scanning already
+# configured in this repo.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '17 6 * * 1'  # Mondays 06:17 UTC — catch newly disclosed CVEs between changes
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trivy-fs:
+    name: Trivy filesystem scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Run Trivy (report-only)
+        id: trivy
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '0'
+          format: table
+          output: trivy-report.txt
+
+      - name: Publish findings to job summary
+        if: always()
+        run: |
+          {
+            echo "## Trivy scan — HIGH/CRITICAL (fixable)"
+            echo ""
+            if [ "${{ steps.trivy.outcome }}" = "failure" ]; then
+              echo "⚠️ Trivy step errored (e.g. vulnerability-DB download failure) — see the scan step logs. Findings could NOT be determined; do not treat as clean."
+            elif [ -s trivy-report.txt ]; then
+              echo '```'
+              cat trivy-report.txt
+              echo '```'
+            else
+              echo "No HIGH/CRITICAL fixable findings."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
