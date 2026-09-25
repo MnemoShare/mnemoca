@@ -5,7 +5,7 @@ go 1.26.0
 require (
 	filippo.io/mldsa v0.0.0-20260711112038-ff3f469cee29
 	github.com/ThalesGroup/crypto11 v1.6.2
-	github.com/dwoolworth/goodm v0.3.0
+	github.com/dwoolworth/goodm v0.6.0
 	github.com/spf13/cobra v1.10.2
 	go.etcd.io/bbolt v1.5.0
 	go.mongodb.org/mongo-driver/v2 v2.5.0
