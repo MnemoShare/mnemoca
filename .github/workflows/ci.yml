@@ -11,11 +11,13 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: k8s-ci
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
+          # The post-step cache save hangs on the persistent metal runners.
+          cache: false
           go-version: "1.26"
       - name: Tests (FIPS 140-3 runtime mode)
         run: GODEBUG=fips140=on go test ./...
@@ -30,28 +32,33 @@ jobs:
           done
 
   test-mongo:
-    runs-on: ubuntu-latest
+    runs-on: k8s-ci
     services:
       mongo:
         image: mongo:8
+        # Several runners share one metal host, so let Docker pick the host port.
         ports:
-          - 27017:27017
-    env:
-      MNEMOCA_TEST_MONGO_URI: mongodb://localhost:27017
+          - 27017
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
+          # The post-step cache save hangs on the persistent metal runners.
+          cache: false
           go-version: "1.26"
       - name: Tests against MongoDB (store conformance, store audit, CA end-to-end)
+        env:
+          MNEMOCA_TEST_MONGO_URI: mongodb://localhost:${{ job.services.mongo.ports['27017'] }}
         run: go test ./internal/store/ ./internal/audit/ ./internal/ca/
 
   lint:
-    runs-on: ubuntu-latest
+    runs-on: k8s-ci
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
+          # The post-step cache save hangs on the persistent metal runners.
+          cache: false
           go-version: "1.26"
       - uses: golangci/golangci-lint-action@v8
         with:
@@ -60,7 +67,7 @@ jobs:
   image:
     needs: [test, test-mongo, lint]
     if: github.event_name == 'push'
-    runs-on: ubuntu-latest
+    runs-on: k8s-ci
     permissions:
       contents: read
       packages: write
@@ -80,6 +87,14 @@ jobs:
             type=sha,prefix=
             type=ref,event=tag
             type=raw,value=latest,enable={{is_default_branch}}
+      # The persistent metal runners reach GitHub's Actions cache at a few
+      # hundred KB/s, so type=gha restores ran for many minutes. Each runner keeps
+      # its own BuildKit cache on local disk instead; a runner runs one job at a
+      # time, so there is never a concurrent writer.
+      - name: Locate the runner-local build cache
+        id: buildcache
+        run: echo "dir=$(dirname "$RUNNER_WORKSPACE")/_buildx-cache/${GITHUB_REPOSITORY#*/}" >> "$GITHUB_OUTPUT"
+
       - uses: docker/build-push-action@v6
         with:
           context: .
@@ -89,5 +104,15 @@ jobs:
             VERSION=${{ github.ref_name }}-${{ github.sha }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=local,src=${{ steps.buildcache.outputs.dir }}
+          cache-to: type=local,dest=${{ steps.buildcache.outputs.dir }}-new,mode=max
+
+      # A local cache export only ever adds blobs; swapping in the fresh export
+      # keeps it at one build's worth instead of growing without bound.
+      - name: Rotate the build cache
+        env:
+          CACHE_DIR: ${{ steps.buildcache.outputs.dir }}
+        run: |
+          rm -rf "$CACHE_DIR"
+          mv "$CACHE_DIR-new" "$CACHE_DIR"
+          du -sh "$CACHE_DIR"
