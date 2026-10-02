@@ -5,8 +5,8 @@ github.com/ThalesGroup/crypto11 v1.6.2/go.mod h1:fQ61t02lJdXD2HrG7upt/VRlDECsipw
 github.com/cpuguy83/go-md2man/v2 v2.0.6/go.mod h1:oOW0eioCTA6cOiMLiUPZOpcVxMig6NIQQ7OS05n1F4g=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
-github.com/dwoolworth/goodm v0.3.0 h1:xeTByqG6fza6lEko8erHGq7XWetvDw1WH0icIuqKBXg=
-github.com/dwoolworth/goodm v0.3.0/go.mod h1:BKAXAYQ6OBgmmOwe1ChS4Bcd9SLP6X498GQ3oQzzq1M=
+github.com/dwoolworth/goodm v0.6.0 h1:xvr5pgwDAO+tFwbQTAGZeB0hEjFKE92E6gkgguH56eU=
+github.com/dwoolworth/goodm v0.6.0/go.mod h1:BKAXAYQ6OBgmmOwe1ChS4Bcd9SLP6X498GQ3oQzzq1M=
 github.com/google/go-cmp v0.6.0 h1:ofyhxvXcZhMsU5ulbFiLKl/XBFqE1GSq7atu8tAmTRI=
 github.com/google/go-cmp v0.6.0/go.mod h1:17dUlkBOakJ0+DkrSSNjCkIjxS6bF9zb3elmeNGIjoY=
 github.com/inconshreveable/mousetrap v1.1.0 h1:wN+x4NVGpMsO7ErUn/mUI3vEoE6Jt13X2s0bqwp9tc8=
