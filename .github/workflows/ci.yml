@@ -30,11 +30,11 @@ jobs:
           done
 
   test-mongo:
-    # mongo:8 refuses to start on Linux 6.19+ (SERVER-121912); ubuntu-latest is 26.04.
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     services:
       mongo:
-        image: mongo:8
+        # mongo 8.x refuses to start on the runners' Linux 6.19+ kernels (SERVER-121912).
+        image: mongo:7
         ports:
           - 27017:27017
         options: >-
