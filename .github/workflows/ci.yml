@@ -30,7 +30,8 @@ jobs:
           done
 
   test-mongo:
-    runs-on: ubuntu-latest
+    # mongo:8 refuses to start on Linux 6.19+ (SERVER-121912); ubuntu-latest is 26.04.
+    runs-on: ubuntu-24.04
     services:
       mongo:
         image: mongo:8
@@ -42,7 +43,6 @@ jobs:
           --health-timeout 5s
           --health-retries 20
     env:
-      # The runner resolves localhost to ::1 first, and the published port is IPv4 only.
       MNEMOCA_TEST_MONGO_URI: mongodb://127.0.0.1:27017
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
