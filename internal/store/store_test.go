@@ -262,6 +262,112 @@ func TestUpdateConcurrency(t *testing.T) {
 	})
 }
 
+func TestPutIfAbsent(t *testing.T) {
+	forEachBackend(t, func(t *testing.T, s store.Store) {
+		ctx := context.Background()
+		path := []string{"apikeys"}
+
+		won, err := s.PutIfAbsent(ctx, path, "k", []byte("first"))
+		if err != nil || !won {
+			t.Fatalf("first PutIfAbsent = %v, %v; want true, nil", won, err)
+		}
+		won, err = s.PutIfAbsent(ctx, path, "k", []byte("second"))
+		if err != nil || won {
+			t.Fatalf("second PutIfAbsent = %v, %v; want false, nil", won, err)
+		}
+		got, err := s.Get(ctx, path, "k")
+		if err != nil || string(got) != "first" {
+			t.Fatalf("Get = %q, %v; want first value kept", got, err)
+		}
+	})
+}
+
+func TestPutIfAbsentConcurrent(t *testing.T) {
+	forEachBackend(t, func(t *testing.T, s store.Store) {
+		ctx := context.Background()
+		const racers = 24
+
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		winners := 0
+		errs := make(chan error, racers)
+		for i := 0; i < racers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				won, err := s.PutIfAbsent(ctx, []string{"apikeys"}, "bootstrap", []byte(fmt.Sprintf("racer-%d", i)))
+				if err != nil {
+					errs <- err
+					return
+				}
+				if won {
+					mu.Lock()
+					winners++
+					mu.Unlock()
+				}
+			}()
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			t.Fatal(err)
+		}
+		if winners != 1 {
+			t.Fatalf("winners = %d, want exactly 1", winners)
+		}
+	})
+}
+
+var errAtFloor = errors.New("at floor")
+
+// TestUpdateAbortKeepsValueUnderContention is the primitive the last-operator
+// guard relies on: a read-modify-write whose fn can refuse, with no lost or
+// double-applied decrements.
+func TestUpdateAbortKeepsValueUnderContention(t *testing.T) {
+	forEachBackend(t, func(t *testing.T, s store.Store) {
+		ctx := context.Background()
+		path := []string{"guard"}
+		if err := store.PutJSON(ctx, s, path, "ops", &counterDoc{N: 3}); err != nil {
+			t.Fatal(err)
+		}
+		const racers = 20
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		ok, refused := 0, 0
+		for i := 0; i < racers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				err := store.UpdateJSON(ctx, s, path, "ops", false, func(v *counterDoc) error {
+					if v.N <= 1 {
+						return errAtFloor
+					}
+					v.N--
+					return nil
+				})
+				mu.Lock()
+				defer mu.Unlock()
+				switch {
+				case err == nil:
+					ok++
+				case errors.Is(err, errAtFloor):
+					refused++
+				default:
+					t.Errorf("unexpected error: %v", err)
+				}
+			}()
+		}
+		wg.Wait()
+		var v counterDoc
+		if err := store.GetJSON(ctx, s, path, "ops", &v); err != nil {
+			t.Fatal(err)
+		}
+		if v.N != 1 || ok != 2 || refused != racers-2 {
+			t.Fatalf("n=%d ok=%d refused=%d, want n=1 ok=2 refused=%d", v.N, ok, refused, racers-2)
+		}
+	})
+}
+
 func TestNextSeq(t *testing.T) {
 	forEachBackend(t, func(t *testing.T, s store.Store) {
 		ctx := context.Background()

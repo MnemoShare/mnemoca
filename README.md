@@ -63,7 +63,64 @@ mnemoca audit verify
 
 # Serve the REST API + ACME
 mnemoca serve --listen :8443 --external-url https://ca.example.com
+
+# First start (embedded store): the operator API key is written to
+# ./mnemoca-data/bootstrap-api-key (mode 0600) -- never to the logs.
+export MNEMOCA_API_KEY=$(cat mnemoca-data/bootstrap-api-key)
 ```
+
+### Operator API key
+
+On first start with no API keys, `serve` creates the initial operator key:
+
+- **`MNEMOCA_BOOTSTRAP_API_KEY_FILE`** (or `--bootstrap-api-key-file`) names a
+  file holding the key; it is adopted and stored hashed. The format is
+  `mnemoca_<16 lowercase hex>_<64 lowercase hex>`, for example
+  `printf 'mnemoca_%s_%s' $(openssl rand -hex 8) $(openssl rand -hex 32)`.
+  A malformed key fails startup.
+- **Unset, `--db bolt`:** a random key is minted into
+  `<data-dir>/bootstrap-api-key` with mode 0600.
+- **Unset, `--db mongo`:** startup fails. Replicas cannot safely share a
+  locally written file, so the key must be supplied.
+
+The key is never written to stdout or stderr. Concurrent replicas on an empty
+shared store create exactly one bootstrap key. The file is only consulted when
+the store has no API keys; otherwise the server logs a warning naming the key
+ID (never the secret) and ignores it.
+
+The file is consulted whenever the store holds **no operator key** (first start,
+or recovery after every operator key was lost; recovery is audited as
+`apikey.bootstrap.recover`). It is ignored while any operator key exists.
+Consequence: if you rotate keys and revoke the key from this file, the next
+restart that finds no operator key re-adopts it, bringing a revoked key back.
+After rotating, replace the file's key (or remove the Secret/file setting).
+On the embedded store, revoking the minted bootstrap key deletes
+`<data-dir>/bootstrap-api-key`.
+
+Rotate keys with the operator-only API: `POST /api/v1/apikeys` creates one
+(`Client.CreateAPIKey`), `DELETE /api/v1/apikeys/{id}` revokes one
+(`Client.RevokeAPIKey`). Revocation is audited. The store counts live operator
+keys in a store document updated atomically, so two concurrent revocations
+(including on different replicas) cannot both succeed when they would remove
+the last one. The count is reconciled with the stored keys at startup; it
+cannot protect against keys removed by editing the store directly, and a crash
+mid-revoke leaves the key uncounted for 5 minutes. That is why the bootstrap
+file doubles as a recovery path.
+
+### Upgrading from 0.1.x
+
+Releases before 0.1.3 printed the bootstrap operator key to the server's
+stdout/stderr, so it may sit in container logs and log aggregation. On every
+install that ran such a release:
+
+1. Upgrade to 0.1.3 or later.
+2. Create a new operator key: `POST /api/v1/apikeys` with `{"role":"operator"}`
+   and store the result (a Kubernetes Secret, for the chart).
+3. Revoke the old bootstrap key with `DELETE /api/v1/apikeys/<id>`. The id is
+   the 16 hex characters after `mnemoca_` in the printed key; for keys minted by
+   0.1.3+ on the embedded store it is `0000000000000000`.
+4. Purge or rotate the log lines that contained the old key, and update every
+   client holding it.
 
 ### cert-manager
 

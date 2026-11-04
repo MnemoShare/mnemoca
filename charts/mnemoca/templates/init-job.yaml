@@ -1,0 +1,44 @@
+{{- if eq .Values.store.type "mongo" }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "mnemoca.fullname" . }}-init
+  labels:
+    helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
+    app.kubernetes.io/name: {{ include "mnemoca.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: init
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "mnemoca.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: init
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: init
+          {{- include "mnemoca.initContainerBody" . | nindent 10 }}
+      volumes:
+        - {name: data, emptyDir: {}}
+        - {name: tmp, emptyDir: {}}
+        {{- include "mnemoca.passphraseVolume" . | nindent 8 }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+{{- end }}

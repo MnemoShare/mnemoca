@@ -1,0 +1,54 @@
+MnemoCA {{ .Chart.AppVersion }} installed as {{ include "mnemoca.fullname" . }} (store: {{ .Values.store.type }}, replicas: {{ .Values.replicaCount }}).
+
+1. Operator API key. The key is never logged.
+{{- if .Values.operatorApiKey.existingSecret }}
+   Secret {{ .Values.operatorApiKey.existingSecret }} is adopted whenever the store has NO operator API key: on
+   first start, and again as recovery if every operator key is ever lost. While an operator key
+   exists it is ignored, and the server logs "bootstrap key <id> ... was not adopted".
+   Rotate with POST/DELETE /api/v1/apikeys, then ROTATE OR REMOVE this Secret: after the old
+   key is revoked and no other operator key remains, a restart would re-adopt it.
+{{- else }}
+   The server minted one into a 0600 file on the data volume. The image has no shell, so
+   read it through an ephemeral container running as the same uid:
+
+     echo '{"securityContext":{"runAsUser":65532,"runAsGroup":65532,"runAsNonRoot":true}}' > mnemoca-debug.json
+     P=$(kubectl get pod -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }},app.kubernetes.io/component=ca -o name | head -1)
+     kubectl debug -n {{ .Release.Namespace }} -it $P --image=busybox:1.36 --target=mnemoca --custom=mnemoca-debug.json -- cat /proc/1/root/data/bootstrap-api-key
+
+   Prefer operatorApiKey.existingSecret to avoid this.
+{{- end }}
+
+2. Trust anchors (unauthenticated):
+
+     kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "mnemoca.fullname" . }} 8443:{{ .Values.service.port }}
+     curl -k https://localhost:8443/roots
+
+{{- if not (include "mnemoca.externalUrl" .) }}
+
+WARNING: externalUrl is not set. ACME directory URLs will be built without a
+public base. Set externalUrl (or enable ingress) before enrolling ACME clients.
+{{- end }}
+{{- if and .Values.tls.enabled (not .Values.tls.existingSecret) .Values.tls.generate }}
+
+WARNING: the listener uses a chart-generated self-signed certificate. Set
+tls.existingSecret to a certificate your clients trust for production.
+{{- end }}
+{{- if and (eq .Values.store.type "bolt") (not .Values.passphrase.existingSecret) .Values.passphrase.generate }}
+
+The key-encryption passphrase is in Secret {{ include "mnemoca.passphraseSecretName" . }}
+(kept on uninstall). Back it up: without it the CA keys are unrecoverable.
+{{- end }}
+{{- if .Values.ingress.enabled }}
+
+Ingress: keep TLS end-to-end (ssl-passthrough or a TLS/TCP route). Terminating
+TLS at the ingress breaks the HTTPS backend and hides client identity.
+{{- end }}
+{{- if .Values.networkPolicy.enabled }}
+
+NetworkPolicy: ALL ingress is denied until networkPolicy.ingressFrom lists the
+namespaces/pods allowed to reach the CA (currently {{ len .Values.networkPolicy.ingressFrom }} peer(s)).
+{{- if not .Values.networkPolicy.acmeEgress.enabled }}
+Egress to port 80 is blocked, so ACME http-01 challenges fail; use dns-01 or
+set networkPolicy.acmeEgress.enabled.
+{{- end }}
+{{- end }}

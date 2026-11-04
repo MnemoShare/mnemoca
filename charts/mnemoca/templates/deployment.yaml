@@ -1,0 +1,148 @@
+{{- include "mnemoca.validate" . }}
+{{- $bolt := eq .Values.store.type "bolt" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "mnemoca.fullname" . }}
+  labels:
+    {{- include "mnemoca.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  {{- if $bolt }}
+  strategy:
+    type: Recreate
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "mnemoca.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "mnemoca.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        {{- if and .Values.tls.enabled (not .Values.tls.existingSecret) }}
+        checksum/tls: {{ include (print $.Template.BasePath "/secret-tls.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "mnemoca.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if $bolt }}
+      initContainers:
+        - name: init
+          {{- include "mnemoca.initContainerBody" . | nindent 10 }}
+      {{- end }}
+      containers:
+        - name: mnemoca
+          image: {{ include "mnemoca.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - serve
+            - --listen=:8443
+            - --passphrase-file=/etc/mnemoca/passphrase/{{ .Values.passphrase.existingSecretKey }}
+            {{- with include "mnemoca.externalUrl" . }}
+            - --external-url={{ . }}
+            {{- end }}
+            {{- if .Values.acme.eab }}
+            - --acme-eab
+            {{- end }}
+            {{- if .Values.tls.enabled }}
+            - --tls-cert=/etc/mnemoca/tls/tls.crt
+            - --tls-key=/etc/mnemoca/tls/tls.key
+            {{- end }}
+          env:
+            {{- include "mnemoca.env" . | nindent 12 }}
+            {{- if .Values.acme.allowPrivate }}
+            - name: MNEMOCA_ACME_ALLOW_PRIVATE
+              value: "true"
+            {{- end }}
+            {{- if .Values.operatorApiKey.existingSecret }}
+            - name: MNEMOCA_BOOTSTRAP_API_KEY_FILE
+              value: /etc/mnemoca/operator-key/{{ .Values.operatorApiKey.existingSecretKey }}
+            {{- end }}
+          ports:
+            - {name: https, containerPort: 8443, protocol: TCP}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: https
+              scheme: {{ ternary "HTTPS" "HTTP" .Values.tls.enabled }}
+            {{- toYaml .Values.probes.liveness | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: https
+              scheme: {{ ternary "HTTPS" "HTTP" .Values.tls.enabled }}
+            {{- toYaml .Values.probes.readiness | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: tmp, mountPath: /tmp}
+            - {name: passphrase, mountPath: /etc/mnemoca/passphrase, readOnly: true}
+            {{- if .Values.operatorApiKey.existingSecret }}
+            - {name: operator-key, mountPath: /etc/mnemoca/operator-key, readOnly: true}
+            {{- end }}
+            {{- if .Values.tls.enabled }}
+            - {name: tls, mountPath: /etc/mnemoca/tls, readOnly: true}
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: data
+          {{- if $bolt }}
+          persistentVolumeClaim:
+            claimName: {{ default (include "mnemoca.fullname" .) .Values.persistence.existingClaim }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - {name: tmp, emptyDir: {}}
+        {{- include "mnemoca.passphraseVolume" . | nindent 8 }}
+        {{- with include "mnemoca.operatorKeyVolume" . }}
+        {{- . | nindent 8 }}
+        {{- end }}
+        {{- if .Values.tls.enabled }}
+        - name: tls
+          secret:
+            secretName: {{ include "mnemoca.tlsSecretName" . }}
+            defaultMode: 0400
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if and (gt (int .Values.replicaCount) 1) .Values.topologySpread.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: {{ .Values.topologySpread.maxSkew }}
+          topologyKey: {{ .Values.topologySpread.topologyKey }}
+          whenUnsatisfiable: {{ .Values.topologySpread.whenUnsatisfiable }}
+          labelSelector:
+            matchLabels:
+              {{- include "mnemoca.selectorLabels" . | nindent 14 }}
+      {{- end }}

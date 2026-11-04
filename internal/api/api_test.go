@@ -10,8 +10,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -21,10 +19,8 @@ import (
 	"github.com/mnemoshare/mnemoca/internal/pkix"
 )
 
-var keyRe = regexp.MustCompile(`mnemoca_[0-9a-f]+_[0-9a-f]+`)
-
-// newTestServer initializes a real CA env, builds the API handler (capturing
-// the bootstrap operator key printed to stderr), and serves it via httptest.
+// newTestServer initializes a real CA env, builds the API handler with a
+// known bootstrap operator key, and serves it via httptest.
 func newTestServer(t *testing.T) (*httptest.Server, string) {
 	t.Helper()
 	env, err := ca.OpenEnv(t.TempDir(), []byte("test"))
@@ -39,24 +35,10 @@ func newTestServer(t *testing.T) (*httptest.Server, string) {
 		t.Fatal(err)
 	}
 
-	// Capture stderr around New to harvest the bootstrap key.
-	old := os.Stderr
-	r, w, err := os.Pipe()
+	bootstrapKey := testBootstrapKey
+	handler, err := New(env, Options{BootstrapKeyFile: writeKeyFile(t, bootstrapKey)})
 	if err != nil {
 		t.Fatal(err)
-	}
-	os.Stderr = w
-	handler := New(env, Options{})
-	_ = w.Close()
-	os.Stderr = old
-	captured, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	bootstrapKey := keyRe.FindString(string(captured))
-	if bootstrapKey == "" {
-		t.Fatalf("no bootstrap key printed to stderr; got: %q", captured)
 	}
 
 	srv := httptest.NewServer(handler)
@@ -297,46 +279,6 @@ func TestAPI(t *testing.T) {
 	wantStatus(t, resp, http.StatusForbidden)
 }
 
-// TestBootstrapOnce verifies the bootstrap key is only generated when no keys
-// exist.
-func TestBootstrapOnce(t *testing.T) {
-	env, err := ca.OpenEnv(t.TempDir(), []byte("test"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = env.Close() })
-	if _, err := env.Init(context.Background(), ca.InitOptions{
-		Alg:   pkix.MLDSA65,
-		Actor: audit.Actor{Type: "operator", ID: "test"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	capture := func() string {
-		old := os.Stderr
-		r, w, err := os.Pipe()
-		if err != nil {
-			t.Fatal(err)
-		}
-		os.Stderr = w
-		New(env, Options{})
-		_ = w.Close()
-		os.Stderr = old
-		data, err := io.ReadAll(r)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return string(data)
-	}
-
-	if first := capture(); !keyRe.MatchString(first) {
-		t.Fatalf("first start printed no bootstrap key: %q", first)
-	}
-	if second := capture(); keyRe.MatchString(second) {
-		t.Fatalf("second start printed another bootstrap key: %q", second)
-	}
-}
-
 // TestACMEMount verifies a provided ACME handler is reachable under /acme/.
 func TestACMEMount(t *testing.T) {
 	env, err := ca.OpenEnv(t.TempDir(), []byte("test"))
@@ -351,17 +293,15 @@ func TestACMEMount(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	old := os.Stderr
-	devnull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	handler, err := New(env, Options{
+		BootstrapKeyFile: writeKeyFile(t, testBootstrapKey),
+		ACME: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = fmt.Fprintf(w, "acme:%s", r.URL.Path)
+		}),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	os.Stderr = devnull
-	handler := New(env, Options{ACME: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = fmt.Fprintf(w, "acme:%s", r.URL.Path)
-	})})
-	os.Stderr = old
-	_ = devnull.Close()
 
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)

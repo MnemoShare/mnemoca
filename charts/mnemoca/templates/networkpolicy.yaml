@@ -1,0 +1,52 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "mnemoca.fullname" . }}
+  labels:
+    {{- include "mnemoca.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "mnemoca.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    {{- with .Values.networkPolicy.ingressFrom }}
+    - from:
+        {{- toYaml . | nindent 8 }}
+      ports:
+        - port: https
+          protocol: TCP
+    {{- else }} []
+    {{- end }}
+  egress:
+    - ports:
+        - {port: {{ .Values.networkPolicy.dnsPort }}, protocol: UDP}
+        - {port: {{ .Values.networkPolicy.dnsPort }}, protocol: TCP}
+    {{- if eq .Values.store.type "mongo" }}
+    - {{- with .Values.networkPolicy.mongoEgress.to }}
+      to:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      ports:
+        - {port: {{ .Values.networkPolicy.mongoEgress.port }}, protocol: TCP}
+    {{- end }}
+    {{- if .Values.networkPolicy.acmeEgress.enabled }}
+    - {{- with .Values.networkPolicy.acmeEgress.to }}
+      to:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      ports:
+        {{- toYaml .Values.networkPolicy.acmeEgress.ports | nindent 8 }}
+    {{- end }}
+    {{- if or .Values.networkPolicy.hsmEgress.to .Values.networkPolicy.hsmEgress.ports }}
+    - {{- with .Values.networkPolicy.hsmEgress.to }}
+      to:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.networkPolicy.hsmEgress.ports }}
+      ports:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- end }}
+{{- end }}

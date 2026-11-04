@@ -104,12 +104,83 @@ func (m *Manager) Issue(ctx context.Context, req IssueRequest) ([]Issued, error)
 	for _, target := range targets {
 		issued, err := m.issueOne(ctx, t, root, profile, req, target, validity)
 		if err != nil {
-			return nil, err
+			var serials []string
+			for _, is := range out {
+				serials = append(serials, is.Cert.X509.SerialNumber.String())
+			}
+			var persisted *persistedError
+			if errors.As(err, &persisted) {
+				serials = append(serials, persisted.serial)
+				err = persisted.err
+			}
+			return nil, m.abandonIssued(ctx, req.Actor, t.ID, serials, err)
 		}
 		out = append(out, *issued)
 	}
 	return out, nil
 }
+
+const (
+	// reasonCessationOfOperation is the RFC 5280 CRL reason used for
+	// certificates issued as part of a request that did not complete.
+	reasonCessationOfOperation = 5
+	// abandonTimeout bounds the compensating revocation and its audit record,
+	// which run detached from the (possibly cancelled) request context.
+	abandonTimeout = 30 * time.Second
+)
+
+// abandonIssued revokes certificates already issued by a request that failed
+// part-way, so the caller is never left with a valid certificate it was not
+// told about. It runs detached from ctx (a cancelled request must not leave
+// the certificates valid), audits the outcome, and returns cause annotated
+// with the serials revoked or left issued.
+func (m *Manager) abandonIssued(ctx context.Context, actor audit.Actor, tenant string, serials []string, cause error) error {
+	if len(serials) == 0 {
+		return cause
+	}
+	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), abandonTimeout)
+	defer cancel()
+
+	var revoked, stuck []string
+	for _, serial := range serials {
+		if err := m.Revoke(dctx, tenant, serial, reasonCessationOfOperation, actor); err != nil {
+			stuck = append(stuck, serial)
+			continue
+		}
+		revoked = append(revoked, serial)
+	}
+	_ = m.Audit.Log(dctx, audit.Record{
+		Tenant: tenant,
+		Actor:  actor,
+		Action: "cert.issue.abandoned",
+		Object: audit.Object{Type: "cert", ID: strings.Join(serials, ",")},
+		Detail: map[string]string{
+			"revoked":     strings.Join(revoked, ","),
+			"left_issued": strings.Join(stuck, ","),
+			"cause":       cause.Error(),
+		},
+	})
+	msg := ""
+	if len(revoked) > 0 {
+		msg += fmt.Sprintf("; revoked already-issued serial(s) %s", strings.Join(revoked, ","))
+	}
+	if len(stuck) > 0 {
+		msg += fmt.Sprintf("; WARNING: serial(s) %s remain issued and could not be revoked", strings.Join(stuck, ","))
+	} else {
+		msg += "; no issued serial remains valid"
+	}
+	return fmt.Errorf("%w%s", cause, msg)
+}
+
+// persistedError reports a failure after the certificate record was stored;
+// the caller must revoke serial since the certificate is withheld.
+type persistedError struct {
+	serial string
+	err    error
+}
+
+func (e *persistedError) Error() string { return e.err.Error() }
+func (e *persistedError) Unwrap() error { return e.err }
 
 func (m *Manager) issueOne(ctx context.Context, t *Tenant, root *RootInfo, profile Profile, req IssueRequest, target Chain, validity time.Duration) (*Issued, error) {
 	keyRef, certPEM, rootPEM := t.KeyRef, t.CertPEM, root.CertPEM
@@ -188,7 +259,7 @@ func (m *Manager) issueOne(ctx context.Context, t *Tenant, root *RootInfo, profi
 			"not_after": rec.NotAfter.Format(time.RFC3339),
 		},
 	}); err != nil {
-		return nil, fmt.Errorf("ca: audit append failed, withholding certificate: %w", err)
+		return nil, &persistedError{serial: rec.Serial, err: fmt.Errorf("ca: audit append failed, withholding certificate: %w", err)}
 	}
 	return &Issued{Chain: target, Cert: cert, Path: []*pkix.Certificate{cert, issuingCert, rootCert}}, nil
 }

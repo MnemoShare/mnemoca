@@ -13,8 +13,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.26"
       - name: Tests (FIPS 140-3 runtime mode)
@@ -33,14 +33,20 @@ jobs:
     runs-on: ubuntu-latest
     services:
       mongo:
-        image: mongo:8
+        # mongo 8.x refuses to start on the runners' Linux 6.19+ kernels (SERVER-121912).
+        image: mongo:7
         ports:
           - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping:1}).ok'"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     env:
-      MNEMOCA_TEST_MONGO_URI: mongodb://localhost:27017
+      MNEMOCA_TEST_MONGO_URI: mongodb://127.0.0.1:27017
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.26"
       - name: Tests against MongoDB (store conformance, store audit, CA end-to-end)
@@ -49,13 +55,68 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.26"
-      - uses: golangci/golangci-lint-action@v8
+      - uses: golangci/golangci-lint-action@4afd733a84b1f43292c63897423277bb7f4313a9 # v8
         with:
           version: v2.12
+
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.16.3
+      - name: Lint
+        run: helm lint charts/mnemoca -f charts/mnemoca/ci/evaluation-values.yaml
+      - name: Template (evaluation defaults)
+        run: helm template t charts/mnemoca -f charts/mnemoca/ci/evaluation-values.yaml > /dev/null
+      - name: Default image is at least 0.1.3 unless overridden
+        run: |
+          tag=$(helm template t charts/mnemoca -f charts/mnemoca/ci/evaluation-values.yaml \
+            | grep -m1 'image: docker.io/mnemoshare/mnemoca:' | sed 's/.*mnemoca://')
+          echo "default image tag: $tag"
+          [ -n "$tag" ]
+          [ "$(printf '%s\n0.1.3\n' "$tag" | sort -V | head -1)" = "0.1.3" ]
+      - name: Template (mongo, 3 replicas, pkcs11, operator key)
+        run: |
+          helm template t charts/mnemoca -f charts/mnemoca/ci/evaluation-values.yaml \
+            --set store.type=mongo --set replicaCount=3 --set passphrase.generate=false \
+            --set passphrase.existingSecret=pp --set store.mongo.uriSecret.name=mu \
+            --set operatorApiKey.existingSecret=ok \
+            --set pkcs11.enabled=true --set pkcs11.modulePath=/m.so \
+            --set pkcs11.tokenLabel=tk --set pkcs11.pinSecret.name=pin > /dev/null
+      - name: Operator key env and mount render when the secret is set
+        run: |
+          out=$(helm template t charts/mnemoca -f charts/mnemoca/ci/evaluation-values.yaml \
+            --set operatorApiKey.existingSecret=ok)
+          echo "$out" | grep -q 'name: MNEMOCA_BOOTSTRAP_API_KEY_FILE'
+          echo "$out" | grep -q 'mountPath: /etc/mnemoca/operator-key'
+          echo "$out" | grep -q 'secretName: ok'
+      - name: Operator key env absent when the secret is unset
+        run: |
+          if helm template t charts/mnemoca -f charts/mnemoca/ci/evaluation-values.yaml \
+            | grep -q MNEMOCA_BOOTSTRAP_API_KEY_FILE; then exit 1; fi
+      - name: ACME egress renders only when enabled
+        run: |
+          helm template t charts/mnemoca -f charts/mnemoca/ci/evaluation-values.yaml \
+            | { ! grep -q 'port: 80$'; }
+          helm template t charts/mnemoca -f charts/mnemoca/ci/evaluation-values.yaml \
+            --set networkPolicy.acmeEgress.enabled=true | grep -q 'port: 80$'
+      - name: Must-fail variants
+        run: |
+          fail() { if helm template t charts/mnemoca "$@" > /dev/null 2>&1; then echo "expected failure: $*" >&2; exit 1; fi; }
+          fail
+          fail -f charts/mnemoca/ci/evaluation-values.yaml --set replicaCount=2
+          fail -f charts/mnemoca/ci/evaluation-values.yaml --set passphrase.generate=false
+          fail -f charts/mnemoca/ci/evaluation-values.yaml --set tls.generate=false
+          fail -f charts/mnemoca/ci/evaluation-values.yaml --set networkPolicy.acmeEgress.enabled=true \
+            --set networkPolicy.acmeEgress.to=null
+          fail -f charts/mnemoca/ci/evaluation-values.yaml --set store.type=mongo --set replicaCount=3 \
+            --set passphrase.generate=false --set passphrase.existingSecret=pp --set store.mongo.uriSecret.name=mu
 
   image:
     needs: [test, test-mongo, lint]
@@ -65,14 +126,14 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/metadata-action@v5
+      - uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         id: meta
         with:
           images: ghcr.io/mnemoshare/mnemoca
@@ -80,7 +141,7 @@ jobs:
             type=sha,prefix=
             type=ref,event=tag
             type=raw,value=latest,enable={{is_default_branch}}
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           platforms: linux/amd64

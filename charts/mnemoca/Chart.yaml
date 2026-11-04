@@ -1,0 +1,34 @@
+apiVersion: v2
+name: mnemoca
+description: Post-quantum-ready certificate authority (ML-DSA, hybrid, ACME, multi-tenant) with a FIPS 140-3 enabled image
+type: application
+version: 0.2.0
+appVersion: "0.1.3"
+kubeVersion: ">=1.25.0-0"
+home: https://github.com/MnemoShare/mnemoca
+sources:
+  - https://github.com/MnemoShare/mnemoca
+keywords:
+  - certificate-authority
+  - pki
+  - post-quantum
+  - ml-dsa
+  - acme
+  - fips
+maintainers:
+  - name: MnemoShare
+    url: https://mnemoshare.com
+annotations:
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/category: security
+  artifacthub.io/images: |
+    - name: mnemoca
+      image: docker.io/mnemoshare/mnemoca:0.1.3
+      platforms:
+        - linux/amd64
+        - linux/arm64
+  artifacthub.io/links: |
+    - name: source
+      url: https://github.com/MnemoShare/mnemoca
+    - name: documentation
+      url: https://github.com/MnemoShare/mnemoca/blob/main/README.md

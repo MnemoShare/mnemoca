@@ -1,13 +1,17 @@
 package api
 
 import (
+	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
 	"slices"
 	"time"
 
 	"github.com/mnemoshare/mnemoca/internal/audit"
 	"github.com/mnemoshare/mnemoca/internal/ca"
 	"github.com/mnemoshare/mnemoca/internal/pkix"
+	"github.com/mnemoshare/mnemoca/internal/store"
 )
 
 func (s *server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
@@ -314,4 +318,76 @@ func (s *server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request, key 
 		"tenant":     created.Tenant,
 		"created_at": created.CreatedAt,
 	})
+}
+
+// handleRevokeAPIKey deletes an API key. Revocations claim the key in a store
+// document with an atomic read-modify-write, so two concurrent revocations
+// (from any replica) cannot both pass the "keep one operator key" check. The
+// document is reconciled against the stored keys at startup, so the guarantee
+// holds while no key was added or removed behind the API's back; a crash
+// mid-revoke keeps the key uncounted (never over-counted) until the claim
+// expires.
+func (s *server) handleRevokeAPIKey(w http.ResponseWriter, r *http.Request, caller *apiKey) {
+	ctx := r.Context()
+	id := r.PathValue("id")
+
+	var target apiKey
+	if err := store.GetJSON(ctx, s.env.Store, apiKeysBucket, id, &target); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "API key %q not found", id)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	isOperator := target.Role == roleOperator
+	if isOperator {
+		if err := s.beginRevoke(ctx, id); err != nil {
+			if errors.Is(err, errLastOperator) || errors.Is(err, errRevokeInProgress) {
+				writeError(w, http.StatusConflict, "%v", err)
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "%v", err)
+			return
+		}
+	}
+	rec := audit.Record{
+		Tenant: target.Tenant,
+		Actor:  s.actor(caller, r),
+		Action: "apikey.revoke",
+		Object: audit.Object{Type: "apikey", ID: id},
+		Detail: map[string]string{"role": target.Role, "tenant": target.Tenant},
+	}
+	fail := func(err error, audited bool) {
+		if audited {
+			rec.Action = "apikey.revoke.failed"
+			rec.Detail = map[string]string{"role": target.Role, "tenant": target.Tenant, "error": err.Error()}
+			_ = s.env.Manager.Audit.Log(ctx, rec)
+		}
+		if isOperator {
+			// Only restore the count if the key really survived: a delete that
+			// committed but returned an error must not leave a ghost id.
+			if _, getErr := s.env.Store.Get(ctx, apiKeysBucket, id); getErr == nil {
+				_ = s.abortRevoke(ctx, id)
+			} else if errors.Is(getErr, store.ErrNotFound) {
+				_ = s.finishRevoke(ctx, id)
+			}
+		}
+		writeError(w, http.StatusInternalServerError, "%v", err)
+	}
+	if err := s.env.Manager.Audit.Log(ctx, rec); err != nil {
+		fail(err, false)
+		return
+	}
+	if err := s.env.Store.Delete(ctx, apiKeysBucket, id); err != nil {
+		fail(err, true)
+		return
+	}
+	if isOperator {
+		_ = s.finishRevoke(ctx, id)
+	}
+	if id == bootstrapMintedID && s.env.DB == "bolt" {
+		_ = os.Remove(filepath.Join(s.env.Dir, BootstrapKeyFileName))
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

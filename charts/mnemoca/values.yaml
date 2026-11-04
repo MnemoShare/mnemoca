@@ -1,0 +1,225 @@
+# Default values for the MnemoCA chart.
+
+image:
+  repository: docker.io/mnemoshare/mnemoca
+  # Defaults to the chart appVersion. Release images on Docker Hub carry no "v"
+  # prefix; the CI images on ghcr.io/mnemoshare/mnemoca use the git tag or sha.
+  tag: ""
+  digest: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# Storage backend.
+#   bolt  - embedded, single writer. Forces one replica, a PVC, and the Recreate
+#           rollout strategy. Keys live encrypted on the PVC.
+#   mongo - HA. Documents, key envelopes and the audit chain live in MongoDB,
+#           so replicas are stateless.
+store:
+  type: bolt
+  mongo:
+    database: mnemoca
+    # Secret holding the connection URI. Required for type=mongo.
+    uriSecret:
+      name: ""
+      key: uri
+
+replicaCount: 1
+
+# Root CA bootstrap, run as `mnemoca init --if-needed` (never regenerates an
+# existing root). Applies on first install only; changing these later has no
+# effect on an initialized CA.
+init:
+  name: "MnemoCA Root"
+  alg: ml-dsa-87
+  pairAlg: ecdsa-p384
+  experimentalComposite: false
+  resources:
+    requests: {cpu: 50m, memory: 64Mi}
+    limits: {memory: 256Mi}
+
+# Public base URL clients reach the CA at (ACME directory URLs are built from
+# it). Falls back to https://<first ingress host> when empty.
+externalUrl: ""
+
+acme:
+  # Require ACME External Account Binding (tenant-scoped enrollment).
+  eab: true
+  # Let http-01 validation connect to private/loopback/link-local addresses
+  # (MNEMOCA_ACME_ALLOW_PRIVATE). Lab and kind setups only: with it on, an
+  # ACME identifier can make the CA fetch internal URLs. The NetworkPolicy
+  # still blocks those destinations unless networkPolicy.acmeEgress.to is
+  # widened as well.
+  allowPrivate: false
+
+# Key-encryption passphrase for CA private keys (softkey/storekey backends).
+# Losing it makes the CA keys unrecoverable.
+passphrase:
+  # Existing Secret holding the passphrase. Required unless generate=true.
+  existingSecret: ""
+  existingSecretKey: passphrase
+  # Evaluation only (bolt store): let the chart generate the passphrase with
+  # `lookup`, kept across upgrades and `helm uninstall`. Rendering offline
+  # (`helm template`, Argo CD) cannot see the cluster, so it would generate a
+  # new passphrase and orphan the encrypted root; use existingSecret there.
+  generate: false
+
+# Initial operator API key, adopted on first start only (format:
+# mnemoca_<16 hex>_<64 hex>). Required with store.type=mongo; with bolt the
+# server otherwise mints one into a 0600 file on the data volume.
+operatorApiKey:
+  existingSecret: ""
+  existingSecretKey: key
+
+# Listener TLS. The server speaks TLS itself on the service port.
+tls:
+  enabled: true
+  # kubernetes.io/tls Secret (tls.crt / tls.key), e.g. issued by cert-manager.
+  # Required unless generate=true.
+  existingSecret: ""
+  # Evaluation only: generate a self-signed certificate for the service DNS
+  # names (kept across upgrades via `lookup`, same offline caveat as the
+  # passphrase).
+  generate: false
+  # Extra SANs for the generated certificate.
+  extraSANs: []
+
+# PKCS#11 HSM signing backend. Requires an image built with cgo and the vendor
+# module mounted via extraVolumes/extraVolumeMounts; see docs/hsm.md. The
+# default static image cannot perform PKCS#11 operations.
+pkcs11:
+  enabled: false
+  modulePath: ""
+  tokenLabel: ""
+  pinSecret:
+    name: ""
+    key: pin
+  # Extra env for the vendor module (e.g. YUBIHSM_PKCS11_CONF).
+  extraEnv: []
+
+# FIPS 140-3 runtime mode. Leave on.
+fips:
+  enabled: true
+
+service:
+  type: ClusterIP
+  port: 8443
+  annotations: {}
+
+# TLS stays end-to-end: terminate nothing at the ingress. Use ssl-passthrough
+# (ingress-nginx annotation below) or a TCP/TLS route (Gateway API TLSRoute,
+# Traefik IngressRouteTCP, etc.) instead.
+ingress:
+  enabled: false
+  className: ""
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-passthrough: "true"
+    nginx.ingress.kubernetes.io/backend-protocol: HTTPS
+  hosts:
+    - host: ca.example.com
+      path: /
+      pathType: Prefix
+  # Only needed by controllers that match certificates by host.
+  tls: []
+
+persistence:
+  # bolt store only.
+  enabled: true
+  existingClaim: ""
+  storageClass: ""
+  accessModes: [ReadWriteOnce]
+  size: 1Gi
+  annotations: {}
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+resources:
+  requests: {cpu: 100m, memory: 128Mi}
+  limits: {memory: 512Mi}
+
+probes:
+  liveness:
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 6
+  readiness:
+    initialDelaySeconds: 2
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+# Seconds; the server drains for 15s on SIGTERM.
+terminationGracePeriodSeconds: 30
+
+# Applied when replicaCount > 1.
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+topologySpread:
+  enabled: true
+  maxSkew: 1
+  topologyKey: topology.kubernetes.io/zone
+  whenUnsatisfiable: ScheduleAnyway
+
+networkPolicy:
+  enabled: true
+  # Namespaces/pods allowed to reach the CA. Empty list allows no ingress.
+  # Each entry is a NetworkPolicyPeer, e.g.
+  #   - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: mnemoshare-prod}}
+  ingressFrom: []
+  # Mongo egress (store.type=mongo): NetworkPolicyPeers and port.
+  mongoEgress:
+    to: []
+    port: 27017
+  # http-01 challenge validation fetches http://<domain>/.well-known/... from
+  # the CA, which the default egress forbids. Prefer dns-01 (needs no egress
+  # beyond DNS); enable this and narrow `to` to the networks your ACME
+  # identifiers resolve into if you need http-01.
+  # Defaults to every public address: the private, loopback, link-local and
+  # CGNAT ranges are excepted. An explicitly empty `to` is rejected.
+  acmeEgress:
+    enabled: false
+    to:
+      - ipBlock:
+          cidr: 0.0.0.0/0
+          except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16, 127.0.0.0/8]
+      - ipBlock:
+          cidr: "::/0"
+          except: ["fc00::/7", "fe80::/10", "::1/128"]
+    ports:
+      - {port: 80, protocol: TCP}
+  # Optional KMS/HSM egress peers and ports (e.g. CloudHSM ENIs).
+  hsmEgress:
+    to: []
+    ports: []
+  dnsPort: 53
+
+env: []
+extraVolumes: []
+extraVolumeMounts: []
+nodeSelector: {}
+tolerations: []
+affinity: {}

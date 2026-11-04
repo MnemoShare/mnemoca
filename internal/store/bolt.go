@@ -73,6 +73,22 @@ func (s *Bolt) Put(_ context.Context, path []string, key string, data []byte) er
 	})
 }
 
+func (s *Bolt) PutIfAbsent(_ context.Context, path []string, key string, data []byte) (bool, error) {
+	created := false
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		b, err := bucketPath(tx, path, true)
+		if err != nil {
+			return err
+		}
+		if b.Get([]byte(key)) != nil {
+			return nil
+		}
+		created = true
+		return b.Put([]byte(key), data)
+	})
+	return created, err
+}
+
 func (s *Bolt) Get(_ context.Context, path []string, key string) ([]byte, error) {
 	var out []byte
 	err := s.db.View(func(tx *bolt.Tx) error {
