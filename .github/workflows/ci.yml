@@ -78,7 +78,7 @@ jobs:
       - name: Template (mongo, 3 replicas, pkcs11, operator key)
         run: |
           helm template t charts/mnemoca -f charts/mnemoca/ci/evaluation-values.yaml \
-            --set store.type=mongo --set replicaCount=3 \
+            --set store.type=mongo --set replicaCount=3 --set passphrase.generate=false \
             --set passphrase.existingSecret=pp --set store.mongo.uriSecret.name=mu \
             --set operatorApiKey.existingSecret=ok \
             --set pkcs11.enabled=true --set pkcs11.modulePath=/m.so \
@@ -110,7 +110,7 @@ jobs:
           fail -f charts/mnemoca/ci/evaluation-values.yaml --set networkPolicy.acmeEgress.enabled=true \
             --set networkPolicy.acmeEgress.to=null
           fail -f charts/mnemoca/ci/evaluation-values.yaml --set store.type=mongo --set replicaCount=3 \
-            --set passphrase.existingSecret=pp --set store.mongo.uriSecret.name=mu
+            --set passphrase.generate=false --set passphrase.existingSecret=pp --set store.mongo.uriSecret.name=mu
 
   image:
     needs: [test, test-mongo, lint]

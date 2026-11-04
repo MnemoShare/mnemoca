@@ -41,9 +41,13 @@ var serveCmd = &cobra.Command{
 			return fmt.Errorf("CA not initialized (run `mnemoca init`)")
 		}
 
+		acmeH, err := acmeHandler(env, serveExternalURL, serveACMEEAB)
+		if err != nil {
+			return err
+		}
 		handler, err := api.New(env, api.Options{
 			ExternalURL:        serveExternalURL,
-			ACME:               acmeHandler(env, serveExternalURL, serveACMEEAB),
+			ACME:               acmeH,
 			BootstrapKeyFile:   bootstrapKeyFile(cmd),
 			BootstrapKeySource: bootstrapKeySource(cmd),
 		})

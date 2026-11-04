@@ -116,3 +116,22 @@ func TestServeAdoptsBootstrapKeyFromEnvEndToEnd(t *testing.T) {
 		t.Fatalf("adopted env key status = %d, want 200", status)
 	}
 }
+
+func TestServeRejectsUnparseableAllowPrivate(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("MNEMOCA_PASSPHRASE", "test")
+	f := serveCmd.Flags().Lookup("bootstrap-api-key-file")
+	_ = f.Value.Set("")
+	f.Changed = false
+	RootCmd.SetArgs([]string{"init", "--alg", "ml-dsa-65", "--data-dir", dir})
+	if err := RootCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MNEMOCA_ACME_ALLOW_PRIVATE", "maybe")
+	serveCmd.SetContext(context.Background())
+	RootCmd.SetArgs([]string{"serve", "--listen", "127.0.0.1:0", "--data-dir", dir})
+	err := RootCmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "MNEMOCA_ACME_ALLOW_PRIVATE") {
+		t.Fatalf("err = %v, want a startup error naming MNEMOCA_ACME_ALLOW_PRIVATE", err)
+	}
+}

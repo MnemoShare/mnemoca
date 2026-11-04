@@ -61,10 +61,13 @@ detail. The Helm chart in `charts/mnemoca` encodes these decisions.
   failed audit write is repaired by the next start, and a crash between the
   audit write and the "audited" flag repeats the record.
 - Keys are rotated and revoked through the operator API. The count of live
-  operator keys is a store document changed by atomic read-modify-write, so
-  concurrent revocations, even from different replicas, cannot remove the last
-  operator key through the API. Direct store edits are outside that guarantee,
-  and the bootstrap file is the recovery path.
+  operator keys is a store document changed by atomic read-modify-write, so two
+  concurrent revocations, including on different replicas, cannot both pass the
+  "keep one operator key" check. The document is reconciled with the stored
+  keys at startup (re-checking each key inside the compare-and-swap, so a
+  restart racing a revocation cannot resurrect the revoked id). Direct store
+  edits are outside that guarantee, a crash mid-revoke keeps the key uncounted
+  for a bounded time, and the bootstrap file is the recovery path.
 
 ### NetworkPolicy defaults
 

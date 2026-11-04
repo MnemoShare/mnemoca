@@ -49,7 +49,9 @@ acme:
   eab: true
   # Let http-01 validation connect to private/loopback/link-local addresses
   # (MNEMOCA_ACME_ALLOW_PRIVATE). Lab and kind setups only: with it on, an
-  # ACME identifier can make the CA fetch internal URLs.
+  # ACME identifier can make the CA fetch internal URLs. The NetworkPolicy
+  # still blocks those destinations unless networkPolicy.acmeEgress.to is
+  # widened as well.
   allowPrivate: false
 
 # Key-encryption passphrase for CA private keys (softkey/storekey backends).

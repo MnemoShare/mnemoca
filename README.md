@@ -100,9 +100,12 @@ On the embedded store, revoking the minted bootstrap key deletes
 Rotate keys with the operator-only API: `POST /api/v1/apikeys` creates one
 (`Client.CreateAPIKey`), `DELETE /api/v1/apikeys/{id}` revokes one
 (`Client.RevokeAPIKey`). Revocation is audited. The store counts live operator
-keys atomically, so concurrent revocations (including from different replicas)
-cannot remove the last one through the API; direct store edits are outside that
-guarantee, which is why the bootstrap file doubles as a recovery path.
+keys in a store document updated atomically, so two concurrent revocations
+(including on different replicas) cannot both succeed when they would remove
+the last one. The count is reconciled with the stored keys at startup; it
+cannot protect against keys removed by editing the store directly, and a crash
+mid-revoke leaves the key uncounted for 5 minutes. That is why the bootstrap
+file doubles as a recovery path.
 
 ### Upgrading from 0.1.x
 

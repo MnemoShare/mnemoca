@@ -320,10 +320,13 @@ func (s *server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request, key 
 	})
 }
 
-// handleRevokeAPIKey deletes an API key. The last operator key cannot be
-// revoked: the count lives in the store and is claimed atomically, so this
-// holds across replicas. (Direct edits to the store, or losing the bootstrap
-// file's key to a re-adoption, are outside that guarantee.)
+// handleRevokeAPIKey deletes an API key. Revocations claim the key in a store
+// document with an atomic read-modify-write, so two concurrent revocations
+// (from any replica) cannot both pass the "keep one operator key" check. The
+// document is reconciled against the stored keys at startup, so the guarantee
+// holds while no key was added or removed behind the API's back; a crash
+// mid-revoke keeps the key uncounted (never over-counted) until the claim
+// expires.
 func (s *server) handleRevokeAPIKey(w http.ResponseWriter, r *http.Request, caller *apiKey) {
 	ctx := r.Context()
 	id := r.PathValue("id")
@@ -362,7 +365,13 @@ func (s *server) handleRevokeAPIKey(w http.ResponseWriter, r *http.Request, call
 			_ = s.env.Manager.Audit.Log(ctx, rec)
 		}
 		if isOperator {
-			_ = s.abortRevoke(ctx, id)
+			// Only restore the count if the key really survived: a delete that
+			// committed but returned an error must not leave a ghost id.
+			if _, getErr := s.env.Store.Get(ctx, apiKeysBucket, id); getErr == nil {
+				_ = s.abortRevoke(ctx, id)
+			} else if errors.Is(getErr, store.ErrNotFound) {
+				_ = s.finishRevoke(ctx, id)
+			}
 		}
 		writeError(w, http.StatusInternalServerError, "%v", err)
 	}

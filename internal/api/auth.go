@@ -205,6 +205,10 @@ func (s *server) bootstrapKey() error {
 	}
 
 	recovery := anyKey
+	if recovery && supplied != nil {
+		fmt.Fprintf(os.Stderr, "mnemoca: warning: no operator API key exists; recovering by adopting bootstrap key %s from %s\n",
+			supplied.ID, s.keySource())
+	}
 	var created bool
 	var id string
 	switch {
@@ -309,8 +313,8 @@ func (s *server) mintBootstrapFile(ctx context.Context, recovery bool) (bool, er
 	}
 	path := filepath.Join(s.env.Dir, BootstrapKeyFileName)
 	if err := os.Rename(tmp, path); err != nil {
-		// A concurrent starter's recovery may already have installed it.
-		if _, statErr := os.Lstat(path); statErr != nil {
+		// A concurrent starter's recovery may already have installed the same key.
+		if !fileHoldsKeyHash(path, key.Hash) {
 			return false, fmt.Errorf("installing bootstrap key file: %w", err)
 		}
 	}
@@ -420,7 +424,7 @@ func (s *server) tenantScoped(next keyHandler) keyHandler {
 
 // operatorSet is the store-side count of live operator keys. Every change goes
 // through store.Update, which is atomic on bolt and compare-and-swap on mongo,
-// so the "never revoke the last operator key" guard holds across replicas.
+// so concurrent revocations are serialized on the document and the "never revoke the last operator key" guard holds while the document is consistent with the keys (see reconcileOperators).
 // Revoking holds ids mid-revocation so a restart reconcile does not count them.
 type operatorSet struct {
 	IDs      []string             `json:"ids"`
@@ -479,6 +483,7 @@ func (s *server) beginRevoke(ctx context.Context, id string) error {
 func (s *server) finishRevoke(ctx context.Context, id string) error {
 	return s.updateOperators(ctx, func(o *operatorSet) error {
 		delete(o.Revoking, id)
+		o.IDs = slices.DeleteFunc(o.IDs, func(x string) bool { return x == id })
 		return nil
 	})
 }
@@ -510,9 +515,19 @@ func (s *server) reconcileOperators(ctx context.Context) error {
 		}
 		var ids []string
 		for id := range actual {
-			if _, revoking := o.Revoking[id]; !revoking {
-				ids = append(ids, id)
+			if _, revoking := o.Revoking[id]; revoking {
+				continue
 			}
+			// The scan above is a snapshot; re-check inside the CAS so a
+			// revocation that finished since (which also bumps this document's
+			// version) is seen on the retry and its id is not resurrected.
+			if _, err := s.env.Store.Get(ctx, apiKeysBucket, id); err != nil {
+				if errors.Is(err, store.ErrNotFound) {
+					continue
+				}
+				return err
+			}
+			ids = append(ids, id)
 		}
 		slices.Sort(ids)
 		o.IDs = ids
@@ -553,7 +568,7 @@ func (s *server) recoverMintedFile(ctx context.Context) error {
 			continue
 		}
 		if err := os.Rename(tmp, path); err != nil {
-			if _, statErr := os.Lstat(path); statErr == nil {
+			if fileHoldsKeyHash(path, rec.Hash) {
 				return nil
 			}
 			return fmt.Errorf("restoring bootstrap key file: %w", err)
@@ -566,4 +581,19 @@ func (s *server) recoverMintedFile(ctx context.Context) error {
 	}
 	fmt.Fprintf(os.Stderr, "mnemoca: minted bootstrap key file %s is missing; recover access with %s\n", path, BootstrapKeyEnv)
 	return nil
+}
+
+// fileHoldsKeyHash reports whether the regular file at path holds a bootstrap
+// key whose secret hashes to hash.
+func fileHoldsKeyHash(path, hash string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	_, secret, err := parseKey(strings.TrimSpace(string(data)))
+	if err != nil {
+		return false
+	}
+	sum := sha256.Sum256([]byte(secret))
+	return subtle.ConstantTimeCompare([]byte(hex.EncodeToString(sum[:])), []byte(hash)) == 1
 }
