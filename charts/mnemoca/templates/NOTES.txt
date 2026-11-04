@@ -1,0 +1,32 @@
+MnemoCA {{ .Chart.AppVersion }} installed as {{ include "mnemoca.fullname" . }} (store: {{ .Values.store.type }}, replicas: {{ .Values.replicaCount }}).
+
+1. Operator API key. On first start the server generates ONE bootstrap operator
+   key and prints it once to the pod log. Capture it now:
+
+     kubectl logs -n {{ .Release.Namespace }} deploy/{{ include "mnemoca.fullname" . }} | grep -A1 'bootstrap operator API key'
+
+2. Trust anchors (unauthenticated):
+
+     kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "mnemoca.fullname" . }} 8443:{{ .Values.service.port }}
+     curl -k https://localhost:8443/roots
+
+{{- if not (include "mnemoca.externalUrl" .) }}
+
+WARNING: externalUrl is not set. ACME directory URLs will be built without a
+public base. Set externalUrl (or enable ingress) before enrolling ACME clients.
+{{- end }}
+{{- if and .Values.tls.enabled (not .Values.tls.existingSecret) }}
+
+WARNING: the listener uses a chart-generated self-signed certificate. Set
+tls.existingSecret to a certificate your clients trust for production.
+{{- end }}
+{{- if and (eq .Values.store.type "bolt") (not .Values.passphrase.existingSecret) }}
+
+The key-encryption passphrase is in Secret {{ include "mnemoca.passphraseSecretName" . }}
+(kept on uninstall). Back it up: without it the CA keys are unrecoverable.
+{{- end }}
+{{- if .Values.ingress.enabled }}
+
+Ingress: keep TLS end-to-end (ssl-passthrough or a TLS/TCP route). Terminating
+TLS at the ingress breaks the HTTPS backend and hides client identity.
+{{- end }}

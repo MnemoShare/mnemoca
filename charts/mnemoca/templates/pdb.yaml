@@ -1,0 +1,13 @@
+{{- if and (gt (int .Values.replicaCount) 1) .Values.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "mnemoca.fullname" . }}
+  labels:
+    {{- include "mnemoca.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "mnemoca.selectorLabels" . | nindent 6 }}
+{{- end }}

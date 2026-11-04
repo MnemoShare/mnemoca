@@ -1,0 +1,100 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "image": {
+      "type": "object",
+      "required": ["repository"],
+      "properties": {
+        "repository": {"type": "string", "minLength": 1},
+        "tag": {"type": "string"},
+        "digest": {"type": "string", "pattern": "^(sha256:[a-f0-9]{64})?$"},
+        "pullPolicy": {"enum": ["Always", "IfNotPresent", "Never"]}
+      }
+    },
+    "store": {
+      "type": "object",
+      "properties": {
+        "type": {"enum": ["bolt", "mongo"]},
+        "mongo": {
+          "type": "object",
+          "properties": {
+            "database": {"type": "string", "minLength": 1},
+            "uriSecret": {
+              "type": "object",
+              "properties": {
+                "name": {"type": "string"},
+                "key": {"type": "string", "minLength": 1}
+              }
+            }
+          }
+        }
+      }
+    },
+    "replicaCount": {"type": "integer", "minimum": 1},
+    "init": {
+      "type": "object",
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "alg": {"enum": ["ecdsa-p256", "ecdsa-p384", "ed25519", "ml-dsa-44", "ml-dsa-65", "ml-dsa-87"]},
+        "pairAlg": {"enum": ["", "ecdsa-p256", "ecdsa-p384", "ed25519", "ml-dsa-44", "ml-dsa-65", "ml-dsa-87"]},
+        "experimentalComposite": {"type": "boolean"}
+      }
+    },
+    "externalUrl": {"type": "string", "pattern": "^(https://.+)?$"},
+    "acme": {"type": "object", "properties": {"eab": {"type": "boolean"}}},
+    "passphrase": {
+      "type": "object",
+      "properties": {
+        "existingSecret": {"type": "string"},
+        "existingSecretKey": {"type": "string", "minLength": 1}
+      }
+    },
+    "tls": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "existingSecret": {"type": "string"},
+        "extraSANs": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "pkcs11": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "modulePath": {"type": "string"},
+        "tokenLabel": {"type": "string"},
+        "pinSecret": {
+          "type": "object",
+          "properties": {"name": {"type": "string"}, "key": {"type": "string", "minLength": 1}}
+        }
+      }
+    },
+    "fips": {"type": "object", "properties": {"enabled": {"type": "boolean"}}},
+    "service": {
+      "type": "object",
+      "properties": {
+        "type": {"enum": ["ClusterIP", "NodePort", "LoadBalancer"]},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535}
+      }
+    },
+    "ingress": {"type": "object", "properties": {"enabled": {"type": "boolean"}}},
+    "persistence": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "size": {"type": "string", "minLength": 1},
+        "accessModes": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "serviceAccount": {"type": "object", "properties": {"create": {"type": "boolean"}}},
+    "podDisruptionBudget": {"type": "object", "properties": {"enabled": {"type": "boolean"}}},
+    "networkPolicy": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "ingressFrom": {"type": "array"}
+      }
+    }
+  }
+}
