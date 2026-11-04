@@ -104,11 +104,45 @@ func (m *Manager) Issue(ctx context.Context, req IssueRequest) ([]Issued, error)
 	for _, target := range targets {
 		issued, err := m.issueOne(ctx, t, root, profile, req, target, validity)
 		if err != nil {
-			return nil, err
+			return nil, m.abandonIssued(ctx, req.Actor, t.ID, out, err)
 		}
 		out = append(out, *issued)
 	}
 	return out, nil
+}
+
+// reasonCessationOfOperation is the RFC 5280 CRL reason used for certificates
+// issued as part of a request that did not complete.
+const reasonCessationOfOperation = 5
+
+// abandonIssued revokes certificates already issued by a multi-chain request
+// whose later step failed, so the caller is never left with a valid
+// certificate it was not told about. The returned error says which serials
+// were revoked, or left issued if revocation also failed.
+func (m *Manager) abandonIssued(ctx context.Context, actor audit.Actor, tenant string, issued []Issued, cause error) error {
+	if len(issued) == 0 {
+		return cause
+	}
+	var revoked, stuck []string
+	for _, is := range issued {
+		serial := is.Cert.X509.SerialNumber.String()
+		if err := m.Revoke(ctx, tenant, serial, reasonCessationOfOperation, actor); err != nil {
+			stuck = append(stuck, serial)
+			continue
+		}
+		revoked = append(revoked, serial)
+	}
+	msg := ""
+	if len(revoked) > 0 {
+		msg += fmt.Sprintf("; revoked already-issued serial(s) %s", strings.Join(revoked, ","))
+	}
+	if len(stuck) > 0 {
+		msg += fmt.Sprintf("; WARNING: serial(s) %s remain issued and could not be revoked", strings.Join(stuck, ","))
+	}
+	if len(stuck) == 0 {
+		msg += "; no issued serial remains valid"
+	}
+	return fmt.Errorf("%w%s", cause, msg)
 }
 
 func (m *Manager) issueOne(ctx context.Context, t *Tenant, root *RootInfo, profile Profile, req IssueRequest, target Chain, validity time.Duration) (*Issued, error) {
