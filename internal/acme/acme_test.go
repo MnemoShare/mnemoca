@@ -55,6 +55,7 @@ func newACMEServer(t *testing.T, env *ca.Env, opts Options) (*httptest.Server, *
 		t.Fatal(err)
 	}
 	opts.ExternalURL = "http://" + l.Addr().String()
+	opts.AllowPrivateAddresses = true // challenge responders listen on loopback
 	h := New(env.Manager, env.Store, env.Manager.Audit, opts)
 	ts := httptest.NewUnstartedServer(h)
 	_ = ts.Listener.Close()

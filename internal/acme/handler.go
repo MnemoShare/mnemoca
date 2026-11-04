@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/mnemoshare/mnemoca/internal/audit"
 	"github.com/mnemoshare/mnemoca/internal/ca"
@@ -18,6 +17,10 @@ import (
 type Options struct {
 	ExternalURL string // e.g. "https://ca.example.com" — used in all returned URLs
 	RequireEAB  bool
+	// AllowPrivateAddresses lets http-01 validation connect to private,
+	// loopback, link-local and other non-public addresses. Off in production:
+	// an attacker-chosen identifier must not make the CA fetch internal URLs.
+	AllowPrivateAddresses bool
 }
 
 // server implements the ADR-0007 RFC 8555 subset over the CA engine. It
@@ -47,7 +50,7 @@ func New(mgr *ca.Manager, st store.Store, log audit.Logger, opts Options) http.H
 		opts:       opts,
 		httpPort:   80,
 		resolver:   net.DefaultResolver,
-		httpClient: &http.Client{Timeout: 10 * time.Second},
+		httpClient: newChallengeClient(opts.AllowPrivateAddresses),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /acme/{tenant}/directory", s.withTenant(s.handleDirectory))
