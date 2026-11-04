@@ -1,0 +1,6 @@
+# Evaluation profile used by CI lint/template: chart-generated passphrase and
+# self-signed listener certificate. Not for production.
+passphrase:
+  generate: true
+tls:
+  generate: true

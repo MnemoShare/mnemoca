@@ -51,12 +51,14 @@ acme:
 # Key-encryption passphrase for CA private keys (softkey/storekey backends).
 # Losing it makes the CA keys unrecoverable.
 passphrase:
-  # Existing Secret holding the passphrase. When empty with store.type=bolt the
-  # chart generates one on first install, keeps it across upgrades and
-  # `helm uninstall` (resource-policy: keep). store.type=mongo requires an
-  # existing Secret.
+  # Existing Secret holding the passphrase. Required unless generate=true.
   existingSecret: ""
   existingSecretKey: passphrase
+  # Evaluation only (bolt store): let the chart generate the passphrase with
+  # `lookup`, kept across upgrades and `helm uninstall`. Rendering offline
+  # (`helm template`, Argo CD) cannot see the cluster, so it would generate a
+  # new passphrase and orphan the encrypted root; use existingSecret there.
+  generate: false
 
 # Initial operator API key, adopted on first start only (format:
 # mnemoca_<16 hex>_<64 hex>). Required with store.type=mongo; with bolt the
@@ -69,9 +71,12 @@ operatorApiKey:
 tls:
   enabled: true
   # kubernetes.io/tls Secret (tls.crt / tls.key), e.g. issued by cert-manager.
-  # When empty the chart generates a self-signed certificate for the service
-  # DNS names (kept across upgrades); use only for evaluation.
+  # Required unless generate=true.
   existingSecret: ""
+  # Evaluation only: generate a self-signed certificate for the service DNS
+  # names (kept across upgrades via `lookup`, same offline caveat as the
+  # passphrase).
+  generate: false
   # Extra SANs for the generated certificate.
   extraSANs: []
 
@@ -183,6 +188,15 @@ networkPolicy:
   mongoEgress:
     to: []
     port: 27017
+  # http-01 challenge validation fetches http://<domain>/.well-known/... from
+  # the CA, which the default egress forbids. Prefer dns-01 (needs no egress
+  # beyond DNS); enable this and narrow `to` to the networks your ACME
+  # identifiers resolve into if you need http-01.
+  acmeEgress:
+    enabled: false
+    to: []
+    ports:
+      - {port: 80, protocol: TCP}
   # Optional KMS/HSM egress peers and ports (e.g. CloudHSM ENIs).
   hsmEgress:
     to: []

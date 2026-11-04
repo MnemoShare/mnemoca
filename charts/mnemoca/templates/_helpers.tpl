@@ -75,7 +75,16 @@ app.kubernetes.io/component: ca
 {{- if and (eq .Values.store.type "bolt") (not .Values.persistence.enabled) -}}
 {{- fail "store.type=bolt requires persistence.enabled=true: the CA database and keys would be lost on restart." -}}
 {{- end -}}
+{{- if and (not .Values.passphrase.existingSecret) (not .Values.passphrase.generate) -}}
+{{- fail "set passphrase.existingSecret, or passphrase.generate=true for evaluation only (offline rendering such as helm template or Argo CD would otherwise generate a new passphrase and lose access to the root)." -}}
+{{- end -}}
+{{- if and .Values.tls.enabled (not .Values.tls.existingSecret) (not .Values.tls.generate) -}}
+{{- fail "set tls.existingSecret, or tls.generate=true for a self-signed evaluation certificate, or tls.enabled=false." -}}
+{{- end -}}
 {{- if eq .Values.store.type "mongo" -}}
+{{- if .Values.passphrase.generate -}}
+{{- fail "passphrase.generate is not supported with store.type=mongo." -}}
+{{- end -}}
 {{- if not .Values.store.mongo.uriSecret.name -}}
 {{- fail "store.type=mongo requires store.mongo.uriSecret.name (a Secret holding the MongoDB URI)." -}}
 {{- end -}}
@@ -133,7 +142,7 @@ app.kubernetes.io/component: ca
 - init
 - --if-needed
 - --passphrase-file=/etc/mnemoca/passphrase/{{ .Values.passphrase.existingSecretKey }}
-- --name={{ .Values.init.name }}
+- {{ printf "--name=%s" .Values.init.name | quote }}
 - --alg={{ .Values.init.alg }}
 {{- if .Values.init.pairAlg }}
 - --pair-alg={{ .Values.init.pairAlg }}

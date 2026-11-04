@@ -31,6 +31,14 @@ spec:
       ports:
         - {port: {{ .Values.networkPolicy.mongoEgress.port }}, protocol: TCP}
     {{- end }}
+    {{- if .Values.networkPolicy.acmeEgress.enabled }}
+    - {{- with .Values.networkPolicy.acmeEgress.to }}
+      to:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      ports:
+        {{- toYaml .Values.networkPolicy.acmeEgress.ports | nindent 8 }}
+    {{- end }}
     {{- if or .Values.networkPolicy.hsmEgress.to .Values.networkPolicy.hsmEgress.ports }}
     - {{- with .Values.networkPolicy.hsmEgress.to }}
       to:

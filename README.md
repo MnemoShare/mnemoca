@@ -84,7 +84,29 @@ On first start with no API keys, `serve` creates the initial operator key:
   locally written file, so the key must be supplied.
 
 The key is never written to stdout or stderr. Concurrent replicas on an empty
-shared store create exactly one bootstrap key.
+shared store create exactly one bootstrap key. The file is only consulted when
+the store has no API keys; otherwise the server logs a warning naming the key
+ID (never the secret) and ignores it.
+
+Rotate keys with the operator-only API: `POST /api/v1/apikeys` creates one
+(`Client.CreateAPIKey`), `DELETE /api/v1/apikeys/{id}` revokes one
+(`Client.RevokeAPIKey`). Revocation is audited and refuses to remove the last
+operator key.
+
+### Upgrading from 0.1.x
+
+Releases before 0.1.3 printed the bootstrap operator key to the server's
+stdout/stderr, so it may sit in container logs and log aggregation. On every
+install that ran such a release:
+
+1. Upgrade to 0.1.3 or later.
+2. Create a new operator key: `POST /api/v1/apikeys` with `{"role":"operator"}`
+   and store the result (a Kubernetes Secret, for the chart).
+3. Revoke the old bootstrap key with `DELETE /api/v1/apikeys/<id>`. The id is
+   the 16 hex characters after `mnemoca_` in the printed key; for keys minted by
+   0.1.3+ on the embedded store it is `0000000000000000`.
+4. Purge or rotate the log lines that contained the old key, and update every
+   client holding it.
 
 ### cert-manager
 
