@@ -69,8 +69,10 @@ No secret values live in `values.yaml`.
 `MNEMOCA_BOOTSTRAP_API_KEY_FILE` on first start (format
 `mnemoca_<16 hex>_<64 hex>`). It is required with `store.type=mongo`. With bolt
 and no secret, the server mints a key into `/data/bootstrap-api-key` (0600).
-It is only adopted when the store has no API keys yet (otherwise the server logs
-a warning naming the key id and ignores it). The key is never written to the pod
+It is adopted whenever the store has no operator key (first start, or recovery
+if all operator keys were lost), and ignored with a warning naming the key id
+otherwise. After rotating keys, rotate or remove this Secret: a restart with no
+operator key left would re-adopt a key you revoked. The key is never written to the pod
 logs. To read a minted key, see the install notes. Rotate with the operator API
 (`POST`/`DELETE /api/v1/apikeys`).
 
@@ -100,8 +102,11 @@ image cannot do PKCS#11; use a cgo build (see `docs/hsm.md`).
 the allowed peers, and allows egress only to DNS, MongoDB, and optional
 `hsmEgress` peers. ACME http-01 needs the CA to fetch `http://<identifier>/` on
 port 80, which is blocked by default: use dns-01 (the default-safe path), or set
-`acmeEgress.enabled=true` and narrow `acmeEgress.to` to the networks your
-identifiers resolve into.
+`acmeEgress.enabled=true`. Its `to` defaults to all public addresses (private,
+loopback, link-local and CGNAT ranges excepted) and may not be set empty. The
+server also refuses to dial non-public addresses for http-01 regardless of the
+NetworkPolicy; `acme.allowPrivate=true` (`MNEMOCA_ACME_ALLOW_PRIVATE`) lifts
+that for lab/kind clusters only.
 
 ## Observability
 

@@ -47,6 +47,10 @@ externalUrl: ""
 acme:
   # Require ACME External Account Binding (tenant-scoped enrollment).
   eab: true
+  # Let http-01 validation connect to private/loopback/link-local addresses
+  # (MNEMOCA_ACME_ALLOW_PRIVATE). Lab and kind setups only: with it on, an
+  # ACME identifier can make the CA fetch internal URLs.
+  allowPrivate: false
 
 # Key-encryption passphrase for CA private keys (softkey/storekey backends).
 # Losing it makes the CA keys unrecoverable.
@@ -192,9 +196,17 @@ networkPolicy:
   # the CA, which the default egress forbids. Prefer dns-01 (needs no egress
   # beyond DNS); enable this and narrow `to` to the networks your ACME
   # identifiers resolve into if you need http-01.
+  # Defaults to every public address: the private, loopback, link-local and
+  # CGNAT ranges are excepted. An explicitly empty `to` is rejected.
   acmeEgress:
     enabled: false
-    to: []
+    to:
+      - ipBlock:
+          cidr: 0.0.0.0/0
+          except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16, 127.0.0.0/8]
+      - ipBlock:
+          cidr: "::/0"
+          except: ["fc00::/7", "fe80::/10", "::1/128"]
     ports:
       - {port: 80, protocol: TCP}
   # Optional KMS/HSM egress peers and ports (e.g. CloudHSM ENIs).

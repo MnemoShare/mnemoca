@@ -95,6 +95,9 @@ app.kubernetes.io/component: ca
 {{- if and (eq .Values.store.type "mongo") (not .Values.operatorApiKey.existingSecret) -}}
 {{- fail "store.type=mongo requires operatorApiKey.existingSecret: replicas cannot share an auto-minted key file, and the key is never logged." -}}
 {{- end -}}
+{{- if and .Values.networkPolicy.acmeEgress.enabled (empty .Values.networkPolicy.acmeEgress.to) -}}
+{{- fail "networkPolicy.acmeEgress.to must not be empty when acmeEgress is enabled: an empty list would open port 80 to every destination, including internal networks." -}}
+{{- end -}}
 {{- if .Values.pkcs11.enabled -}}
 {{- if not (and .Values.pkcs11.modulePath .Values.pkcs11.tokenLabel .Values.pkcs11.pinSecret.name) -}}
 {{- fail "pkcs11.enabled requires pkcs11.modulePath, pkcs11.tokenLabel and pkcs11.pinSecret.name." -}}

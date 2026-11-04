@@ -46,17 +46,25 @@ detail. The Helm chart in `charts/mnemoca` encodes these decisions.
 
 ### Bootstrap credential
 
-- The first operator API key is adopted from a file
-  (`MNEMOCA_BOOTSTRAP_API_KEY_FILE`, mounted from a Secret) when the store has
-  no API keys. It is stored hashed; the plaintext is never printed.
+- The operator API key is adopted from a file
+  (`MNEMOCA_BOOTSTRAP_API_KEY_FILE`, mounted from a Secret) whenever the store
+  has no operator key: on first start, and as audited recovery if every
+  operator key is lost. It is stored hashed; the plaintext is never printed.
+  Consequence: after rotating keys, the Secret must be rotated or removed,
+  because a restart with no operator key left re-adopts the file's key even if
+  it was revoked earlier.
 - Without a file, the embedded store mints a key into a 0600 file in the data
   directory. The shared stores refuse to auto-mint: replicas cannot share a
   local file, and printing the key would put it in log pipelines.
 - Creation is an atomic insert-if-absent in the store, so concurrent replicas
-  create exactly one bootstrap key. The creation is audited exactly once, with a
-  restart repairing a lost audit write.
-- Keys are rotated and revoked through the operator API; the last operator key
-  cannot be revoked.
+  create exactly one bootstrap key. The creation is audited at least once: a
+  failed audit write is repaired by the next start, and a crash between the
+  audit write and the "audited" flag repeats the record.
+- Keys are rotated and revoked through the operator API. The count of live
+  operator keys is a store document changed by atomic read-modify-write, so
+  concurrent revocations, even from different replicas, cannot remove the last
+  operator key through the API. Direct store edits are outside that guarantee,
+  and the bootstrap file is the recovery path.
 
 ### NetworkPolicy defaults
 
@@ -67,8 +75,10 @@ The chart's NetworkPolicy is on by default and deny-first:
   namespace).
 - Egress: DNS, MongoDB (when used) and optional HSM/KMS peers. Port 80 is
   blocked, so ACME http-01 validation does not work by default; dns-01 is the
-  default-safe path, and `acmeEgress` opts in to http-01 with scoped
-  destinations.
+  default-safe path. `acmeEgress` opts in to http-01 towards public addresses
+  only (internal ranges excepted; an empty destination list is rejected).
+  Independently, the server's http-01 dialer refuses non-public addresses after
+  DNS resolution (rebinding-safe) unless `MNEMOCA_ACME_ALLOW_PRIVATE` is set.
 
 ## Consequences
 

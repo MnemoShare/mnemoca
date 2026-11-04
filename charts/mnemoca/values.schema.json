@@ -42,7 +42,7 @@
       }
     },
     "externalUrl": {"type": "string", "pattern": "^(https://.+)?$"},
-    "acme": {"type": "object", "properties": {"eab": {"type": "boolean"}}},
+    "acme": {"type": "object", "properties": {"eab": {"type": "boolean"}, "allowPrivate": {"type": "boolean"}}},
     "passphrase": {
       "type": "object",
       "properties": {

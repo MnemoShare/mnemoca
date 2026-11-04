@@ -107,6 +107,8 @@ jobs:
           fail -f charts/mnemoca/ci/evaluation-values.yaml --set replicaCount=2
           fail -f charts/mnemoca/ci/evaluation-values.yaml --set passphrase.generate=false
           fail -f charts/mnemoca/ci/evaluation-values.yaml --set tls.generate=false
+          fail -f charts/mnemoca/ci/evaluation-values.yaml --set networkPolicy.acmeEgress.enabled=true \
+            --set networkPolicy.acmeEgress.to=null
           fail -f charts/mnemoca/ci/evaluation-values.yaml --set store.type=mongo --set replicaCount=3 \
             --set passphrase.existingSecret=pp --set store.mongo.uriSecret.name=mu
 

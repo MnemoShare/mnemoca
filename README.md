@@ -88,10 +88,21 @@ shared store create exactly one bootstrap key. The file is only consulted when
 the store has no API keys; otherwise the server logs a warning naming the key
 ID (never the secret) and ignores it.
 
+The file is consulted whenever the store holds **no operator key** (first start,
+or recovery after every operator key was lost; recovery is audited as
+`apikey.bootstrap.recover`). It is ignored while any operator key exists.
+Consequence: if you rotate keys and revoke the key from this file, the next
+restart that finds no operator key re-adopts it, bringing a revoked key back.
+After rotating, replace the file's key (or remove the Secret/file setting).
+On the embedded store, revoking the minted bootstrap key deletes
+`<data-dir>/bootstrap-api-key`.
+
 Rotate keys with the operator-only API: `POST /api/v1/apikeys` creates one
 (`Client.CreateAPIKey`), `DELETE /api/v1/apikeys/{id}` revokes one
-(`Client.RevokeAPIKey`). Revocation is audited and refuses to remove the last
-operator key.
+(`Client.RevokeAPIKey`). Revocation is audited. The store counts live operator
+keys atomically, so concurrent revocations (including from different replicas)
+cannot remove the last one through the API; direct store edits are outside that
+guarantee, which is why the bootstrap file doubles as a recovery path.
 
 ### Upgrading from 0.1.x
 

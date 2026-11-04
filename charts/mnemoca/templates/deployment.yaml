@@ -64,6 +64,10 @@ spec:
             {{- end }}
           env:
             {{- include "mnemoca.env" . | nindent 12 }}
+            {{- if .Values.acme.allowPrivate }}
+            - name: MNEMOCA_ACME_ALLOW_PRIVATE
+              value: "true"
+            {{- end }}
             {{- if .Values.operatorApiKey.existingSecret }}
             - name: MNEMOCA_BOOTSTRAP_API_KEY_FILE
               value: /etc/mnemoca/operator-key/{{ .Values.operatorApiKey.existingSecretKey }}

@@ -2,9 +2,11 @@ MnemoCA {{ .Chart.AppVersion }} installed as {{ include "mnemoca.fullname" . }} 
 
 1. Operator API key. The key is never logged.
 {{- if .Values.operatorApiKey.existingSecret }}
-   Secret {{ .Values.operatorApiKey.existingSecret }} is adopted on FIRST start only, when the store has no API
-   keys. If keys already exist it is ignored, and the server logs "bootstrap key <id> ... was
-   not adopted" naming the key id. Rotate with POST/DELETE /api/v1/apikeys.
+   Secret {{ .Values.operatorApiKey.existingSecret }} is adopted whenever the store has NO operator API key: on
+   first start, and again as recovery if every operator key is ever lost. While an operator key
+   exists it is ignored, and the server logs "bootstrap key <id> ... was not adopted".
+   Rotate with POST/DELETE /api/v1/apikeys, then ROTATE OR REMOVE this Secret: after the old
+   key is revoked and no other operator key remains, a restart would re-adopt it.
 {{- else }}
    The server minted one into a 0600 file on the data volume. The image has no shell, so
    read it through an ephemeral container running as the same uid:
