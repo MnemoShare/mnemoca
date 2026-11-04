@@ -20,6 +20,9 @@ type Options struct {
 	ExternalURL string
 	// ACME, if non-nil, is mounted under /acme/.
 	ACME http.Handler
+	// BootstrapKeyFile, when set, holds the operator API key to adopt if the
+	// store has no keys yet.
+	BootstrapKeyFile string
 }
 
 type server struct {
@@ -28,12 +31,13 @@ type server struct {
 }
 
 // New builds the REST API handler over an opened CA environment. On first
-// start (no API keys stored) it generates a bootstrap operator key and prints
-// the plaintext once to stderr.
-func New(env *ca.Env, opts Options) http.Handler {
+// start (no API keys stored) it adopts the operator key from
+// Options.BootstrapKeyFile; without one, bolt mode mints a key into a 0600
+// file in the data directory and mongo mode fails. A key is never printed.
+func New(env *ca.Env, opts Options) (http.Handler, error) {
 	s := &server{env: env, opts: opts}
 	if err := s.bootstrapKey(); err != nil {
-		fmt.Fprintf(os.Stderr, "mnemoca: bootstrap API key: %v\n", err)
+		return nil, fmt.Errorf("api: bootstrap operator key: %w", err)
 	}
 
 	mux := http.NewServeMux()
@@ -60,7 +64,7 @@ func New(env *ca.Env, opts Options) http.Handler {
 	mux.HandleFunc("GET /api/v1/algorithms", s.authed(s.handleAlgorithms))
 	mux.HandleFunc("POST /api/v1/apikeys", s.authed(s.operatorOnly(s.handleCreateAPIKey)))
 
-	return mux
+	return mux, nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

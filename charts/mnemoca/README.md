@@ -21,7 +21,7 @@ bootstrapped as ML-DSA-87 with an ECDSA P-384 pair.
 | `bolt` (default) | exactly 1 (the chart refuses anything else) | PVC, `Recreate` rollouts | `init` container |
 | `mongo` | any | MongoDB (documents, key envelopes, audit chain) | pre-install/pre-upgrade hook Job |
 
-`mongo` requires `store.mongo.uriSecret.name` and `passphrase.existingSecret`
+`mongo` requires `store.mongo.uriSecret.name`, `passphrase.existingSecret` and `operatorApiKey.existingSecret`
 (hooks run before chart-managed Secrets exist, and replicas must share the
 passphrase). `replicaCount > 1` adds a PodDisruptionBudget and topology spread.
 
@@ -29,7 +29,7 @@ passphrase). `replicaCount > 1` adds a PodDisruptionBudget and topology spread.
 kubectl create secret generic mnemoca-passphrase --from-literal=passphrase="$(openssl rand -base64 48)"
 kubectl create secret generic mnemoca-mongo --from-literal=uri='mongodb://...'
 helm install mnemoca ./charts/mnemoca --set store.type=mongo --set replicaCount=3 \
-  --set passphrase.existingSecret=mnemoca-passphrase --set store.mongo.uriSecret.name=mnemoca-mongo
+  --set passphrase.existingSecret=mnemoca-passphrase --set operatorApiKey.existingSecret=mnemoca-operator-key --set store.mongo.uriSecret.name=mnemoca-mongo
 ```
 
 ## Root bootstrap
@@ -45,6 +45,7 @@ No secret values live in `values.yaml`.
 | Secret | Value | Notes |
 |---|---|---|
 | `passphrase.existingSecret` | key-encryption passphrase | bolt: generated once if unset, kept across upgrades and uninstall. Losing it loses the CA keys. |
+| `operatorApiKey.existingSecret` | initial operator API key | required for `mongo` |
 | `store.mongo.uriSecret` | MongoDB URI | required for `mongo` |
 | `pkcs11.pinSecret` | HSM user PIN | required when `pkcs11.enabled` |
 | `tls.existingSecret` | `kubernetes.io/tls` | listener certificate; self-signed if unset |
@@ -54,9 +55,16 @@ cluster (`helm install/upgrade`, not `helm template`).
 
 ## Operator API key
 
-The server mints one bootstrap operator key on first start and prints it once
-to the pod log; it cannot be supplied from a Secret. See the install notes for
-the retrieval command.
+`operatorApiKey.existingSecret` is mounted as a file and adopted through
+`MNEMOCA_BOOTSTRAP_API_KEY_FILE` on first start (format
+`mnemoca_<16 hex>_<64 hex>`). It is required with `store.type=mongo`. With bolt
+and no secret, the server mints a key into `/data/bootstrap-api-key` (0600).
+The key is never written to the pod logs.
+
+```bash
+kubectl create secret generic mnemoca-operator-key \
+  --from-literal=key="mnemoca_$(openssl rand -hex 8)_$(openssl rand -hex 32)"
+```
 
 ## TLS and ingress
 

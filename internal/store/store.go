@@ -21,6 +21,10 @@ var ErrNotFound = errors.New("store: not found")
 type Store interface {
 	// Put stores data under path/key, overwriting any existing value.
 	Put(ctx context.Context, path []string, key string, data []byte) error
+	// PutIfAbsent stores data under path/key only if the key does not exist,
+	// reporting whether this call created it. Exactly one concurrent caller
+	// wins.
+	PutIfAbsent(ctx context.Context, path []string, key string, data []byte) (bool, error)
 	// Get returns the value at path/key, or ErrNotFound.
 	Get(ctx context.Context, path []string, key string) ([]byte, error)
 	// Take atomically returns and deletes the value at path/key, or

@@ -63,7 +63,28 @@ mnemoca audit verify
 
 # Serve the REST API + ACME
 mnemoca serve --listen :8443 --external-url https://ca.example.com
+
+# First start (embedded store): the operator API key is written to
+# ./mnemoca-data/bootstrap-api-key (mode 0600) -- never to the logs.
+export MNEMOCA_API_KEY=$(cat mnemoca-data/bootstrap-api-key)
 ```
+
+### Operator API key
+
+On first start with no API keys, `serve` creates the initial operator key:
+
+- **`MNEMOCA_BOOTSTRAP_API_KEY_FILE`** (or `--bootstrap-api-key-file`) names a
+  file holding the key; it is adopted and stored hashed. The format is
+  `mnemoca_<16 lowercase hex>_<64 lowercase hex>`, for example
+  `printf 'mnemoca_%s_%s' $(openssl rand -hex 8) $(openssl rand -hex 32)`.
+  A malformed key fails startup.
+- **Unset, `--db bolt`:** a random key is minted into
+  `<data-dir>/bootstrap-api-key` with mode 0600.
+- **Unset, `--db mongo`:** startup fails. Replicas cannot safely share a
+  locally written file, so the key must be supplied.
+
+The key is never written to stdout or stderr. Concurrent replicas on an empty
+shared store create exactly one bootstrap key.
 
 ### cert-manager
 

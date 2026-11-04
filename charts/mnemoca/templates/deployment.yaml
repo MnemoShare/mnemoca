@@ -64,6 +64,10 @@ spec:
             {{- end }}
           env:
             {{- include "mnemoca.env" . | nindent 12 }}
+            {{- if .Values.operatorApiKey.existingSecret }}
+            - name: MNEMOCA_BOOTSTRAP_API_KEY_FILE
+              value: /etc/mnemoca/operator-key/{{ .Values.operatorApiKey.existingSecretKey }}
+            {{- end }}
           ports:
             - {name: https, containerPort: 8443, protocol: TCP}
           livenessProbe:
@@ -86,6 +90,9 @@ spec:
             - {name: data, mountPath: /data}
             - {name: tmp, mountPath: /tmp}
             - {name: passphrase, mountPath: /etc/mnemoca/passphrase, readOnly: true}
+            {{- if .Values.operatorApiKey.existingSecret }}
+            - {name: operator-key, mountPath: /etc/mnemoca/operator-key, readOnly: true}
+            {{- end }}
             {{- if .Values.tls.enabled }}
             - {name: tls, mountPath: /etc/mnemoca/tls, readOnly: true}
             {{- end }}
@@ -102,6 +109,9 @@ spec:
           {{- end }}
         - {name: tmp, emptyDir: {}}
         {{- include "mnemoca.passphraseVolume" . | nindent 8 }}
+        {{- with include "mnemoca.operatorKeyVolume" . }}
+        {{- . | nindent 8 }}
+        {{- end }}
         {{- if .Values.tls.enabled }}
         - name: tls
           secret:

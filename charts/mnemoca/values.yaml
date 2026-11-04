@@ -58,6 +58,13 @@ passphrase:
   existingSecret: ""
   existingSecretKey: passphrase
 
+# Initial operator API key, adopted on first start only (format:
+# mnemoca_<16 hex>_<64 hex>). Required with store.type=mongo; with bolt the
+# server otherwise mints one into a 0600 file on the data volume.
+operatorApiKey:
+  existingSecret: ""
+  existingSecretKey: key
+
 # Listener TLS. The server speaks TLS itself on the service port.
 tls:
   enabled: true

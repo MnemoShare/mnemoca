@@ -1,9 +1,17 @@
 MnemoCA {{ .Chart.AppVersion }} installed as {{ include "mnemoca.fullname" . }} (store: {{ .Values.store.type }}, replicas: {{ .Values.replicaCount }}).
 
-1. Operator API key. On first start the server generates ONE bootstrap operator
-   key and prints it once to the pod log. Capture it now:
+1. Operator API key. The key is never logged.
+{{- if .Values.operatorApiKey.existingSecret }}
+   The server adopted the key in Secret {{ .Values.operatorApiKey.existingSecret }} on first start.
+{{- else }}
+   The server minted one into a 0600 file on the data volume (the image has no
+   shell, so read it through an ephemeral container):
 
-     kubectl logs -n {{ .Release.Namespace }} deploy/{{ include "mnemoca.fullname" . }} | grep -A1 'bootstrap operator API key'
+     P=$(kubectl get pod -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }},app.kubernetes.io/component=ca -o name | head -1)
+     kubectl debug -n {{ .Release.Namespace }} -it $P --image=busybox:1.36 --target=mnemoca -- cat /proc/1/root/data/bootstrap-api-key
+
+   Prefer operatorApiKey.existingSecret to avoid this.
+{{- end }}
 
 2. Trust anchors (unauthenticated):
 

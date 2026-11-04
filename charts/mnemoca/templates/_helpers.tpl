@@ -83,6 +83,9 @@ app.kubernetes.io/component: ca
 {{- fail "store.type=mongo requires passphrase.existingSecret: the root bootstrap Job runs before chart-managed Secrets exist, and every replica must share the passphrase." -}}
 {{- end -}}
 {{- end -}}
+{{- if and (eq .Values.store.type "mongo") (not .Values.operatorApiKey.existingSecret) -}}
+{{- fail "store.type=mongo requires operatorApiKey.existingSecret: replicas cannot share an auto-minted key file, and the key is never logged." -}}
+{{- end -}}
 {{- if .Values.pkcs11.enabled -}}
 {{- if not (and .Values.pkcs11.modulePath .Values.pkcs11.tokenLabel .Values.pkcs11.pinSecret.name) -}}
 {{- fail "pkcs11.enabled requires pkcs11.modulePath, pkcs11.tokenLabel and pkcs11.pinSecret.name." -}}
@@ -166,4 +169,13 @@ volumeMounts:
   secret:
     secretName: {{ include "mnemoca.passphraseSecretName" . }}
     defaultMode: 0400
+{{- end -}}
+
+{{- define "mnemoca.operatorKeyVolume" -}}
+{{- if .Values.operatorApiKey.existingSecret -}}
+- name: operator-key
+  secret:
+    secretName: {{ .Values.operatorApiKey.existingSecret }}
+    defaultMode: 0400
+{{- end -}}
 {{- end -}}

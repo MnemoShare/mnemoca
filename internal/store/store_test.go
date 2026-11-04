@@ -262,6 +262,62 @@ func TestUpdateConcurrency(t *testing.T) {
 	})
 }
 
+func TestPutIfAbsent(t *testing.T) {
+	forEachBackend(t, func(t *testing.T, s store.Store) {
+		ctx := context.Background()
+		path := []string{"apikeys"}
+
+		won, err := s.PutIfAbsent(ctx, path, "k", []byte("first"))
+		if err != nil || !won {
+			t.Fatalf("first PutIfAbsent = %v, %v; want true, nil", won, err)
+		}
+		won, err = s.PutIfAbsent(ctx, path, "k", []byte("second"))
+		if err != nil || won {
+			t.Fatalf("second PutIfAbsent = %v, %v; want false, nil", won, err)
+		}
+		got, err := s.Get(ctx, path, "k")
+		if err != nil || string(got) != "first" {
+			t.Fatalf("Get = %q, %v; want first value kept", got, err)
+		}
+	})
+}
+
+func TestPutIfAbsentConcurrent(t *testing.T) {
+	forEachBackend(t, func(t *testing.T, s store.Store) {
+		ctx := context.Background()
+		const racers = 24
+
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		winners := 0
+		errs := make(chan error, racers)
+		for i := 0; i < racers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				won, err := s.PutIfAbsent(ctx, []string{"apikeys"}, "bootstrap", []byte(fmt.Sprintf("racer-%d", i)))
+				if err != nil {
+					errs <- err
+					return
+				}
+				if won {
+					mu.Lock()
+					winners++
+					mu.Unlock()
+				}
+			}()
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			t.Fatal(err)
+		}
+		if winners != 1 {
+			t.Fatalf("winners = %d, want exactly 1", winners)
+		}
+	})
+}
+
 func TestNextSeq(t *testing.T) {
 	forEachBackend(t, func(t *testing.T, s store.Store) {
 		ctx := context.Background()

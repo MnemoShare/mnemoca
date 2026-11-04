@@ -50,6 +50,13 @@
         "existingSecretKey": {"type": "string", "minLength": 1}
       }
     },
+    "operatorApiKey": {
+      "type": "object",
+      "properties": {
+        "existingSecret": {"type": "string"},
+        "existingSecretKey": {"type": "string", "minLength": 1}
+      }
+    },
     "tls": {
       "type": "object",
       "properties": {

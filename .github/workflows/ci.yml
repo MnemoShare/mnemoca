@@ -71,8 +71,15 @@ jobs:
           helm template t charts/mnemoca \
             --set store.type=mongo --set replicaCount=3 \
             --set passphrase.existingSecret=pp --set store.mongo.uriSecret.name=mu \
+            --set operatorApiKey.existingSecret=ok \
             --set pkcs11.enabled=true --set pkcs11.modulePath=/m.so \
             --set pkcs11.tokenLabel=tk --set pkcs11.pinSecret.name=pin > /dev/null
+      - name: Mongo without operator key must fail
+        run: |
+          if helm template t charts/mnemoca --set store.type=mongo --set replicaCount=3 \
+            --set passphrase.existingSecret=pp --set store.mongo.uriSecret.name=mu; then
+            echo "expected failure" >&2; exit 1
+          fi
       - name: Bolt with replicas=2 must fail
         run: |
           if helm template t charts/mnemoca --set replicaCount=2; then

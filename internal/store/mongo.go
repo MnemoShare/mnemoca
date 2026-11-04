@@ -109,6 +109,21 @@ func (m *Mongo) Put(ctx context.Context, path []string, key string, data []byte)
 	})
 }
 
+func (m *Mongo) PutIfAbsent(ctx context.Context, path []string, key string, data []byte) (bool, error) {
+	p, err := joinPath(path)
+	if err != nil {
+		return false, err
+	}
+	err = goodm.Create(ctx, &Doc{Path: p, Key: key, Data: data}, goodm.CreateOptions{DB: m.db})
+	if mongo.IsDuplicateKeyError(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("store: mongo put-if-absent %s/%s: %w", p, key, err)
+	}
+	return true, nil
+}
+
 func (m *Mongo) Get(ctx context.Context, path []string, key string) ([]byte, error) {
 	p, err := joinPath(path)
 	if err != nil {

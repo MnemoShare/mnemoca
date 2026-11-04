@@ -16,11 +16,12 @@ import (
 )
 
 var (
-	serveListen      string
-	serveExternalURL string
-	serveACMEEAB     bool
-	serveTLSCert     string
-	serveTLSKey      string
+	serveListen           string
+	serveExternalURL      string
+	serveACMEEAB          bool
+	serveTLSCert          string
+	serveTLSKey           string
+	serveBootstrapKeyFile string
 )
 
 var serveCmd = &cobra.Command{
@@ -40,10 +41,14 @@ var serveCmd = &cobra.Command{
 			return fmt.Errorf("CA not initialized (run `mnemoca init`)")
 		}
 
-		handler := api.New(env, api.Options{
-			ExternalURL: serveExternalURL,
-			ACME:        acmeHandler(env, serveExternalURL, serveACMEEAB),
+		handler, err := api.New(env, api.Options{
+			ExternalURL:      serveExternalURL,
+			ACME:             acmeHandler(env, serveExternalURL, serveACMEEAB),
+			BootstrapKeyFile: serveBootstrapKeyFile,
 		})
+		if err != nil {
+			return err
+		}
 		srv := &http.Server{
 			Addr:              serveListen,
 			Handler:           handler,
@@ -90,5 +95,8 @@ func init() {
 		"require ACME External Account Binding (tenant-scoped enrollment)")
 	serveCmd.Flags().StringVar(&serveTLSCert, "tls-cert", "", "TLS certificate file (plain HTTP if unset)")
 	serveCmd.Flags().StringVar(&serveTLSKey, "tls-key", "", "TLS private key file")
+	serveCmd.Flags().StringVar(&serveBootstrapKeyFile, "bootstrap-api-key-file",
+		os.Getenv(api.BootstrapKeyEnv),
+		"file holding the operator API key to adopt on first start (default $"+api.BootstrapKeyEnv+"); required with --db mongo")
 	RootCmd.AddCommand(serveCmd)
 }
