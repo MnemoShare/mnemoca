@@ -17,6 +17,8 @@ var blockedPrefixes = func() []netip.Prefix {
 		"0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16",
 		"172.16.0.0/12", "192.0.0.0/24", "192.168.0.0/16", "198.18.0.0/15", "224.0.0.0/3",
 		"::/128", "::1/128", "fc00::/7", "fe80::/10", "ff00::/8", "fd00:ec2::254/128",
+		// NAT64, 6to4 and Teredo embed IPv4 addresses that bypass the IPv4 checks.
+		"64:ff9b::/96", "64:ff9b:1::/48", "2002::/16", "2001::/32",
 	} {
 		out = append(out, netip.MustParsePrefix(c))
 	}
@@ -57,16 +59,41 @@ func safeDialControl(_, address string, _ syscall.RawConn) error {
 	return nil
 }
 
+const maxChallengeRedirects = 5
+
+// challengeRedirectPolicy limits http-01 redirects to http/https on the
+// standard ports and a bounded number of hops; each hop is additionally
+// subject to the dial guard.
+func challengeRedirectPolicy(req *http.Request, via []*http.Request) error {
+	if len(via) >= maxChallengeRedirects {
+		return fmt.Errorf("acme: stopped after %d redirects", maxChallengeRedirects)
+	}
+	switch req.URL.Scheme {
+	case "http", "https":
+	default:
+		return fmt.Errorf("acme: redirect to scheme %q not permitted", req.URL.Scheme)
+	}
+	if port := req.URL.Port(); port != "" && port != "80" && port != "443" {
+		return fmt.Errorf("acme: redirect to port %s not permitted", port)
+	}
+	return nil
+}
+
 // newChallengeClient builds the http-01 client. Proxies are never used, and
 // every connection (including redirect hops) goes through the dial guard
 // unless private addresses are explicitly allowed.
 func newChallengeClient(allowPrivate bool) *http.Client {
-	d := &net.Dialer{Timeout: challengeTimeout}
-	if !allowPrivate {
-		d.Control = safeDialControl
+	if allowPrivate {
+		return newChallengeClientWithControl(nil)
 	}
+	return newChallengeClientWithControl(safeDialControl)
+}
+
+func newChallengeClientWithControl(control func(network, address string, c syscall.RawConn) error) *http.Client {
+	d := &net.Dialer{Timeout: challengeTimeout, Control: control}
 	return &http.Client{
-		Timeout:   challengeTimeout,
-		Transport: &http.Transport{DialContext: d.DialContext, DisableKeepAlives: true},
+		Timeout:       challengeTimeout,
+		Transport:     &http.Transport{DialContext: d.DialContext, DisableKeepAlives: true},
+		CheckRedirect: challengeRedirectPolicy,
 	}
 }

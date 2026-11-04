@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -86,5 +87,71 @@ func TestHTTP01AllowPrivateOptIn(t *testing.T) {
 	}
 	if *hits != 1 {
 		t.Fatalf("hits = %d, want 1", *hits)
+	}
+}
+
+func TestBlockedTransitionAddresses(t *testing.T) {
+	for _, a := range []string{"64:ff9b::7f00:1", "64:ff9b::a00:1", "64:ff9b:1::1", "2002:7f00:1::1", "2002:a00:1::", "2001::1", "2001:0:4136:e378:8000:63bf:3fff:fdd2"} {
+		if !blockedAddress(net.ParseIP(a)) {
+			t.Errorf("%s must be blocked", a)
+		}
+	}
+}
+
+func TestChallengeRedirectPolicy(t *testing.T) {
+	mk := func(raw string) *http.Request {
+		u, _ := url.Parse(raw)
+		return &http.Request{URL: u}
+	}
+	for _, ok := range []string{"http://example.com/x", "https://example.com/x", "https://example.com:443/x", "http://example.com:80/x"} {
+		if err := challengeRedirectPolicy(mk(ok), nil); err != nil {
+			t.Errorf("%s refused: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"ftp://example.com/x", "http://example.com:8080/x", "https://example.com:8443/x", "http://example.com:22/x", "gopher://example.com/"} {
+		if err := challengeRedirectPolicy(mk(bad), nil); err == nil {
+			t.Errorf("%s accepted", bad)
+		}
+	}
+	via := make([]*http.Request, maxChallengeRedirects)
+	if err := challengeRedirectPolicy(mk("http://example.com/"), via); err == nil {
+		t.Error("redirect limit not enforced")
+	}
+}
+
+// redirectClient dials only the test server directly; every other address goes
+// through the real guard.
+func redirectClient(t *testing.T, srvAddr string) *http.Client {
+	t.Helper()
+	c := newChallengeClientWithControl(func(network, address string, rc syscall.RawConn) error {
+		if address == srvAddr {
+			return nil
+		}
+		return safeDialControl(network, address, rc)
+	})
+	return c
+}
+
+func TestChallengeRedirectsAreGuarded(t *testing.T) {
+	var target string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target, http.StatusFound)
+	}))
+	t.Cleanup(srv.Close)
+	addr := srv.Listener.Addr().String()
+	c := redirectClient(t, addr)
+
+	for name, dest := range map[string]string{
+		"private address": "http://10.0.0.5/secret",
+		"metadata":        "http://169.254.169.254/latest/meta-data/",
+		"odd port":        "http://93.184.216.34:8080/x",
+		"loopback":        "http://127.0.0.1:1/x",
+	} {
+		target = dest
+		resp, err := c.Get(srv.URL)
+		if err == nil {
+			_ = resp.Body.Close()
+			t.Errorf("%s: redirect followed", name)
+		}
 	}
 }
