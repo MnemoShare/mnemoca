@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"slices"
 	"time"
@@ -8,6 +9,7 @@ import (
 	"github.com/mnemoshare/mnemoca/internal/audit"
 	"github.com/mnemoshare/mnemoca/internal/ca"
 	"github.com/mnemoshare/mnemoca/internal/pkix"
+	"github.com/mnemoshare/mnemoca/internal/store"
 )
 
 func (s *server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
@@ -314,4 +316,54 @@ func (s *server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request, key 
 		"tenant":     created.Tenant,
 		"created_at": created.CreatedAt,
 	})
+}
+
+// handleRevokeAPIKey deletes an API key. The last operator key cannot be
+// revoked: it would lock everyone out of the key API.
+func (s *server) handleRevokeAPIKey(w http.ResponseWriter, r *http.Request, caller *apiKey) {
+	id := r.PathValue("id")
+	s.keyMu.Lock()
+	defer s.keyMu.Unlock()
+
+	var target apiKey
+	if err := store.GetJSON(r.Context(), s.env.Store, apiKeysBucket, id, &target); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "API key %q not found", id)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	if target.Role == roleOperator {
+		operators := 0
+		err := store.ForEachJSON(r.Context(), s.env.Store, apiKeysBucket, func(_ string, k apiKey) error {
+			if k.Role == roleOperator {
+				operators++
+			}
+			return nil
+		})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "%v", err)
+			return
+		}
+		if operators <= 1 {
+			writeError(w, http.StatusConflict, "refusing to revoke the last operator API key")
+			return
+		}
+	}
+	if err := s.env.Manager.Audit.Log(r.Context(), audit.Record{
+		Tenant: target.Tenant,
+		Actor:  s.actor(caller, r),
+		Action: "apikey.revoke",
+		Object: audit.Object{Type: "apikey", ID: id},
+		Detail: map[string]string{"role": target.Role, "tenant": target.Tenant},
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	if err := s.env.Store.Delete(r.Context(), apiKeysBucket, id); err != nil {
+		writeError(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

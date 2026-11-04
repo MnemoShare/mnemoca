@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -276,4 +277,30 @@ func (c *Client) ListCertificates(ctx context.Context, tenant string) ([]Certifi
 		return nil, err
 	}
 	return out.Certificates, nil
+}
+
+// APIKey is a newly created API key; Key is the plaintext bearer token and is
+// only returned at creation.
+type APIKey struct {
+	ID     string `json:"id"`
+	Key    string `json:"key"`
+	Role   string `json:"role"`
+	Tenant string `json:"tenant,omitempty"`
+}
+
+// CreateAPIKey mints an API key with role "operator" or "tenant" (tenant is
+// required for the latter). Operator key required.
+func (c *Client) CreateAPIKey(ctx context.Context, role, tenant string) (*APIKey, error) {
+	var out APIKey
+	in := map[string]string{"role": role, "tenant": tenant}
+	if err := c.do(ctx, http.MethodPost, "/api/v1/apikeys", in, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// RevokeAPIKey deletes the API key with the given id. The server refuses to
+// revoke the last operator key. Operator key required.
+func (c *Client) RevokeAPIKey(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodDelete, "/api/v1/apikeys/"+url.PathEscape(id), nil, nil)
 }

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -178,6 +179,153 @@ func TestBootstrapMintedToFileNotLogs(t *testing.T) {
 	}
 }
 
+func TestBootstrapMintedTightensLooseFile(t *testing.T) {
+	env := boltEnv(t)
+	path := filepath.Join(env.Dir, BootstrapKeyFileName)
+	if err := os.WriteFile(path, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(env, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %v, want 0600", info.Mode().Perm())
+	}
+	data, _ := os.ReadFile(path)
+	if !keyRe.MatchString(string(data)) {
+		t.Fatal("key file not replaced")
+	}
+}
+
+func TestBootstrapMintedDoesNotFollowSymlink(t *testing.T) {
+	env := boltEnv(t)
+	target := filepath.Join(t.TempDir(), "victim")
+	if err := os.WriteFile(target, []byte("untouched"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(env.Dir, BootstrapKeyFileName)
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(env, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(target); string(got) != "untouched" {
+		t.Fatalf("symlink target overwritten: %q", got)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o600 {
+		t.Fatalf("path is still a symlink or loose: %v", info.Mode())
+	}
+}
+
+func TestBootstrapSuppliedKeyNotAdoptedWarns(t *testing.T) {
+	env := boltEnv(t)
+	if _, err := New(env, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStd(t, func() {
+		if _, err := New(env, Options{BootstrapKeyFile: writeKeyFile(t, testBootstrapKey)}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "0123456789abcdef") || !strings.Contains(out, "not adopted") {
+		t.Fatalf("expected a not-adopted warning naming the key id, got %q", out)
+	}
+	if strings.Contains(out, "00112233445566778899aabbccddeeff") {
+		t.Fatal("secret leaked in warning")
+	}
+	// The already-adopted key must not warn.
+	env2 := boltEnv(t)
+	if _, err := New(env2, Options{BootstrapKeyFile: writeKeyFile(t, testBootstrapKey)}); err != nil {
+		t.Fatal(err)
+	}
+	out = captureStd(t, func() {
+		if _, err := New(env2, Options{BootstrapKeyFile: writeKeyFile(t, testBootstrapKey)}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if strings.Contains(out, "not adopted") {
+		t.Fatalf("warned for an adopted key: %q", out)
+	}
+}
+
+type recordingAudit struct {
+	mu      sync.Mutex
+	failing bool
+	records []audit.Record
+}
+
+func (r *recordingAudit) Log(_ context.Context, rec audit.Record) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.failing {
+		return errors.New("audit unavailable")
+	}
+	r.records = append(r.records, rec)
+	return nil
+}
+
+func (r *recordingAudit) bootstrapCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, rec := range r.records {
+		if rec.Action == "apikey.create" && rec.Detail["bootstrap"] == "true" {
+			n++
+		}
+	}
+	return n
+}
+
+func TestBootstrapAuditExactlyOnceAcrossRestart(t *testing.T) {
+	for _, mode := range []string{"file", "mint"} {
+		t.Run(mode, func(t *testing.T) {
+			env := boltEnv(t)
+			rec := &recordingAudit{failing: true}
+			env.Manager.Audit = rec
+			opts := Options{}
+			if mode == "file" {
+				opts.BootstrapKeyFile = writeKeyFile(t, testBootstrapKey)
+			}
+			if _, err := New(env, opts); err == nil {
+				t.Fatal("startup must fail when the audit record cannot be written")
+			}
+			rec.mu.Lock()
+			rec.failing = false
+			rec.mu.Unlock()
+			for i := 0; i < 3; i++ {
+				if _, err := New(env, opts); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if n := rec.bootstrapCount(); n != 1 {
+				t.Fatalf("bootstrap audit records = %d, want 1", n)
+			}
+		})
+	}
+	t.Run("healthy first start", func(t *testing.T) {
+		env := boltEnv(t)
+		rec := &recordingAudit{}
+		env.Manager.Audit = rec
+		for i := 0; i < 2; i++ {
+			if _, err := New(env, Options{}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if n := rec.bootstrapCount(); n != 1 {
+			t.Fatalf("bootstrap audit records = %d, want 1", n)
+		}
+	})
+}
+
 func TestBootstrapExistingKeysSkipsEverything(t *testing.T) {
 	env := boltEnv(t)
 	if _, err := New(env, Options{BootstrapKeyFile: writeKeyFile(t, testBootstrapKey)}); err != nil {
@@ -248,19 +396,41 @@ func TestBootstrapConcurrentSingleKey(t *testing.T) {
 				}
 				var wg sync.WaitGroup
 				errs := make(chan error, len(envs))
+				handlers := make(chan http.Handler, len(envs))
 				for _, e := range envs {
 					wg.Add(1)
 					go func() {
 						defer wg.Done()
-						_, err := New(e, opts)
+						h, err := New(e, opts)
 						errs <- err
+						handlers <- h
 					}()
 				}
 				wg.Wait()
 				close(errs)
+				close(handlers)
 				for err := range errs {
 					if err != nil {
 						t.Fatal(err)
+					}
+				}
+				if mode == "mint" {
+					path := filepath.Join(envs[0].Dir, BootstrapKeyFileName)
+					info, err := os.Stat(path)
+					if err != nil {
+						t.Fatalf("surviving key file missing: %v", err)
+					}
+					if info.Mode().Perm() != 0o600 {
+						t.Fatalf("key file mode = %v, want 0600", info.Mode().Perm())
+					}
+					data, _ := os.ReadFile(path)
+					h := <-handlers
+					if got := authStatus(t, h, strings.TrimSpace(string(data))); got != http.StatusOK {
+						t.Fatalf("surviving key status = %d, want 200", got)
+					}
+					left, _ := filepath.Glob(filepath.Join(envs[0].Dir, ".bootstrap-api-key.*"))
+					if len(left) != 0 {
+						t.Fatalf("temp files left behind: %v", left)
 					}
 				}
 				n := 0

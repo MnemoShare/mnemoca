@@ -19,8 +19,8 @@ import (
 	"github.com/mnemoshare/mnemoca/internal/pkix"
 )
 
-// newTestServer initializes a real CA env, builds the API handler (capturing
-// the bootstrap operator key printed to stderr), and serves it via httptest.
+// newTestServer initializes a real CA env, builds the API handler with a
+// known bootstrap operator key, and serves it via httptest.
 func newTestServer(t *testing.T) (*httptest.Server, string) {
 	t.Helper()
 	env, err := ca.OpenEnv(t.TempDir(), []byte("test"))

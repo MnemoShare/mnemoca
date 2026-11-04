@@ -44,7 +44,7 @@ var serveCmd = &cobra.Command{
 		handler, err := api.New(env, api.Options{
 			ExternalURL:      serveExternalURL,
 			ACME:             acmeHandler(env, serveExternalURL, serveACMEEAB),
-			BootstrapKeyFile: serveBootstrapKeyFile,
+			BootstrapKeyFile: bootstrapKeyFile(cmd),
 		})
 		if err != nil {
 			return err
@@ -96,7 +96,16 @@ func init() {
 	serveCmd.Flags().StringVar(&serveTLSCert, "tls-cert", "", "TLS certificate file (plain HTTP if unset)")
 	serveCmd.Flags().StringVar(&serveTLSKey, "tls-key", "", "TLS private key file")
 	serveCmd.Flags().StringVar(&serveBootstrapKeyFile, "bootstrap-api-key-file",
-		os.Getenv(api.BootstrapKeyEnv),
+		"",
 		"file holding the operator API key to adopt on first start (default $"+api.BootstrapKeyEnv+"); required with --db mongo")
 	RootCmd.AddCommand(serveCmd)
+}
+
+// bootstrapKeyFile resolves the flag, falling back to the environment when
+// the flag was not given.
+func bootstrapKeyFile(cmd *cobra.Command) string {
+	if cmd.Flags().Changed("bootstrap-api-key-file") {
+		return serveBootstrapKeyFile
+	}
+	return os.Getenv(api.BootstrapKeyEnv)
 }

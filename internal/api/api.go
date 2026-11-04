@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sync"
 
 	"github.com/mnemoshare/mnemoca/internal/ca"
 )
@@ -28,6 +29,10 @@ type Options struct {
 type server struct {
 	env  *ca.Env
 	opts Options
+
+	// keyMu serializes API-key revocation so two concurrent revokes cannot
+	// each leave the other operator key standing.
+	keyMu sync.Mutex
 }
 
 // New builds the REST API handler over an opened CA environment. On first
@@ -63,6 +68,7 @@ func New(env *ca.Env, opts Options) (http.Handler, error) {
 	mux.HandleFunc("DELETE /api/v1/tenants/{id}/profiles/{name}", s.authed(s.tenantScoped(s.handleDeleteProfile)))
 	mux.HandleFunc("GET /api/v1/algorithms", s.authed(s.handleAlgorithms))
 	mux.HandleFunc("POST /api/v1/apikeys", s.authed(s.operatorOnly(s.handleCreateAPIKey)))
+	mux.HandleFunc("DELETE /api/v1/apikeys/{id}", s.authed(s.operatorOnly(s.handleRevokeAPIKey)))
 
 	return mux, nil
 }
