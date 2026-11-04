@@ -36,8 +36,14 @@ jobs:
         image: mongo:8
         ports:
           - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping:1}).ok'"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     env:
-      MNEMOCA_TEST_MONGO_URI: mongodb://localhost:27017
+      # The runner resolves localhost to ::1 first, and the published port is IPv4 only.
+      MNEMOCA_TEST_MONGO_URI: mongodb://127.0.0.1:27017
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
