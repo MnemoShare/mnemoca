@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -56,6 +57,9 @@ type apiKey struct {
 	// creation was written to the audit log.
 	Bootstrap bool `json:"bootstrap,omitempty"`
 	Audited   bool `json:"audited,omitempty"`
+	// Recovery marks a bootstrap key adopted or minted because no operator
+	// key was left, not because the store was empty.
+	Recovery bool `json:"recovery,omitempty"`
 }
 
 // allows reports whether the key may act on tenant.
@@ -105,6 +109,11 @@ func (s *server) createKey(ctx context.Context, role, tenant string) (string, *a
 	if err := store.PutJSON(ctx, s.env.Store, apiKeysBucket, key.ID, key); err != nil {
 		return "", nil, err
 	}
+	if role == roleOperator {
+		if err := s.addOperator(ctx, key.ID); err != nil {
+			return "", nil, err
+		}
+	}
 	return token, key, nil
 }
 
@@ -132,12 +141,15 @@ func isLowerHex(s string) bool {
 	return true
 }
 
-// bootstrapKey makes sure an operator key exists on first start. Creation is
-// an atomic insert-if-absent, so concurrent replicas on a shared store end up
-// with exactly one bootstrap key. The plaintext is never logged. The audit
-// record is written after the insert and then flagged on the key; a start that
-// finds an unaudited bootstrap key writes the record, so a failed audit write
-// is repaired by a restart.
+// bootstrapKey makes sure an operator key exists. With no operator key in the
+// store (first start, or recovery after every operator key was lost) it adopts
+// the key from Options.BootstrapKeyFile, or on the embedded store mints one;
+// creation is an atomic insert-if-absent so concurrent replicas end up with
+// exactly one. The plaintext is never logged. The audit record is written
+// after the insert and then flagged on the key; a start that finds an
+// unaudited bootstrap key writes the record, so a failed audit write is
+// repaired by a restart (at-least-once: a crash between the audit write and
+// the flag repeats it).
 func (s *server) bootstrapKey() error {
 	ctx := context.Background()
 
@@ -155,69 +167,107 @@ func (s *server) bootstrapKey() error {
 		supplied.Bootstrap = true
 	}
 
-	exists := false
-	var unaudited []string
-	err := store.ForEachJSON(ctx, s.env.Store, apiKeysBucket, func(id string, k apiKey) error {
-		exists = true
+	if err := s.reconcileOperators(ctx); err != nil {
+		return err
+	}
+
+	anyKey, operatorExists := false, false
+	var unaudited []apiKey
+	err := store.ForEachJSON(ctx, s.env.Store, apiKeysBucket, func(_ string, k apiKey) error {
+		anyKey = true
+		if k.Role == roleOperator {
+			operatorExists = true
+		}
 		if k.Bootstrap && !k.Audited {
-			unaudited = append(unaudited, id)
+			unaudited = append(unaudited, k)
 		}
 		return nil
 	})
 	if err != nil {
 		return err
 	}
-	if exists {
-		for _, id := range unaudited {
-			if err := s.auditBootstrap(ctx, id); err != nil {
+
+	if operatorExists {
+		for _, k := range unaudited {
+			if err := s.auditBootstrap(ctx, k.ID, k.Recovery); err != nil {
 				return err
 			}
 		}
 		if supplied != nil {
 			if _, err := s.env.Store.Get(ctx, apiKeysBucket, supplied.ID); errors.Is(err, store.ErrNotFound) {
-				fmt.Fprintf(os.Stderr, "mnemoca: warning: bootstrap key %s from %s was not adopted: API keys already exist\n",
-					supplied.ID, BootstrapKeyEnv)
+				fmt.Fprintf(os.Stderr, "mnemoca: warning: bootstrap key %s from %s was not adopted: an operator API key already exists\n",
+					supplied.ID, s.keySource())
 			} else if err != nil {
 				return err
 			}
 		}
-		return nil
+		return s.recoverMintedFile(ctx)
 	}
 
+	recovery := anyKey
 	var created bool
 	var id string
 	switch {
 	case supplied != nil:
 		id = supplied.ID
+		supplied.Recovery = recovery
 		created, err = s.insertKey(ctx, supplied)
+		if err == nil && !created {
+			var existing apiKey
+			if gerr := store.GetJSON(ctx, s.env.Store, apiKeysBucket, id, &existing); gerr != nil {
+				return gerr
+			}
+			if existing.Role != roleOperator {
+				return fmt.Errorf("bootstrap key id %s from %s collides with an existing non-operator key", id, s.keySource())
+			}
+		}
 	case s.env.DB != "bolt":
 		return fmt.Errorf("no operator API key exists and the %s store will not auto-mint one: set %s to a file holding %s<16 hex>_<64 hex>",
 			s.env.DB, BootstrapKeyEnv, keyPrefix)
 	default:
 		id = bootstrapMintedID
-		created, err = s.mintBootstrapFile(ctx)
+		created, err = s.mintBootstrapFile(ctx, recovery)
 	}
 	if err != nil || !created {
 		return err
 	}
-	return s.auditBootstrap(ctx, id)
+	if err := s.addOperator(ctx, id); err != nil {
+		return err
+	}
+	return s.auditBootstrap(ctx, id, recovery)
 }
 
-// auditBootstrap writes the bootstrap creation record and flags the key as
-// audited.
-func (s *server) auditBootstrap(ctx context.Context, id string) error {
+func (s *server) keySource() string {
+	if s.opts.BootstrapKeySource != "" {
+		return s.opts.BootstrapKeySource
+	}
+	return "$" + BootstrapKeyEnv
+}
+
+// auditBootstrap writes the bootstrap creation (or recovery) record and flags
+// the key as audited. A key revoked in the meantime needs no flag.
+func (s *server) auditBootstrap(ctx context.Context, id string, recovery bool) error {
+	action, detail := "apikey.create", map[string]string{"role": roleOperator, "bootstrap": "true"}
+	if recovery {
+		action = "apikey.bootstrap.recover"
+		detail["recovery"] = "true"
+	}
 	if err := s.env.Manager.Audit.Log(ctx, audit.Record{
 		Actor:  audit.Actor{Type: "system", ID: "mnemoca"},
-		Action: "apikey.create",
+		Action: action,
 		Object: audit.Object{Type: "apikey", ID: id},
-		Detail: map[string]string{"role": roleOperator, "bootstrap": "true"},
+		Detail: detail,
 	}); err != nil {
 		return fmt.Errorf("auditing bootstrap key: %w", err)
 	}
-	return store.UpdateJSON(ctx, s.env.Store, apiKeysBucket, id, false, func(k *apiKey) error {
+	err := store.UpdateJSON(ctx, s.env.Store, apiKeysBucket, id, false, func(k *apiKey) error {
 		k.Audited = true
 		return nil
 	})
+	if errors.Is(err, store.ErrNotFound) {
+		return nil
+	}
+	return err
 }
 
 func (s *server) insertKey(ctx context.Context, key *apiKey) (bool, error) {
@@ -234,7 +284,7 @@ func (s *server) insertKey(ctx context.Context, key *apiKey) (bool, error) {
 // renamed over the final path only by the starter that won the insert, so
 // losers cannot disturb the winner's file and a pre-existing loose file or
 // symlink at the path is replaced, not written through.
-func (s *server) mintBootstrapFile(ctx context.Context) (bool, error) {
+func (s *server) mintBootstrapFile(ctx context.Context, recovery bool) (bool, error) {
 	minted, _, err := mintKey(roleOperator, "")
 	if err != nil {
 		return false, err
@@ -245,6 +295,7 @@ func (s *server) mintBootstrapFile(ctx context.Context) (bool, error) {
 	}
 	key := newKeyRecord(bootstrapMintedID, secret, roleOperator, "")
 	key.Bootstrap = true
+	key.Recovery = recovery
 	token := keyPrefix + bootstrapMintedID + "_" + secret
 
 	tmp, err := writeTempSecret(s.env.Dir, token+"\n")
@@ -258,8 +309,10 @@ func (s *server) mintBootstrapFile(ctx context.Context) (bool, error) {
 	}
 	path := filepath.Join(s.env.Dir, BootstrapKeyFileName)
 	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return false, fmt.Errorf("installing bootstrap key file: %w", err)
+		// A concurrent starter's recovery may already have installed it.
+		if _, statErr := os.Lstat(path); statErr != nil {
+			return false, fmt.Errorf("installing bootstrap key file: %w", err)
+		}
 	}
 	fmt.Fprintf(os.Stderr, "mnemoca: generated bootstrap operator API key; read it from %s\n", path)
 	return true, nil
@@ -363,4 +416,154 @@ func (s *server) tenantScoped(next keyHandler) keyHandler {
 		}
 		next(w, r, key)
 	}
+}
+
+// operatorSet is the store-side count of live operator keys. Every change goes
+// through store.Update, which is atomic on bolt and compare-and-swap on mongo,
+// so the "never revoke the last operator key" guard holds across replicas.
+// Revoking holds ids mid-revocation so a restart reconcile does not count them.
+type operatorSet struct {
+	IDs      []string             `json:"ids"`
+	Revoking map[string]time.Time `json:"revoking,omitempty"`
+}
+
+var (
+	operatorMetaBucket = []string{"apikeys-meta"}
+
+	errLastOperator     = errors.New("refusing to revoke the last operator API key")
+	errRevokeInProgress = errors.New("another revocation of this key is in progress")
+)
+
+const (
+	operatorMetaKey = "operators"
+	// revokeClaimTTL bounds how long a crashed revocation keeps its key out of
+	// the operator count.
+	revokeClaimTTL = 5 * time.Minute
+)
+
+func (s *server) updateOperators(ctx context.Context, fn func(*operatorSet) error) error {
+	return store.UpdateJSON(ctx, s.env.Store, operatorMetaBucket, operatorMetaKey, true, fn)
+}
+
+func (o *operatorSet) has(id string) bool { return slices.Contains(o.IDs, id) }
+
+func (s *server) addOperator(ctx context.Context, id string) error {
+	return s.updateOperators(ctx, func(o *operatorSet) error {
+		if !o.has(id) {
+			o.IDs = append(o.IDs, id)
+		}
+		delete(o.Revoking, id)
+		return nil
+	})
+}
+
+// beginRevoke claims an operator key for revocation, atomically refusing when
+// it is the last one.
+func (s *server) beginRevoke(ctx context.Context, id string) error {
+	return s.updateOperators(ctx, func(o *operatorSet) error {
+		if t, ok := o.Revoking[id]; ok && time.Since(t) < revokeClaimTTL {
+			return errRevokeInProgress
+		}
+		if len(o.IDs) <= 1 && o.has(id) || len(o.IDs) == 0 {
+			return errLastOperator
+		}
+		o.IDs = slices.DeleteFunc(o.IDs, func(x string) bool { return x == id })
+		if o.Revoking == nil {
+			o.Revoking = map[string]time.Time{}
+		}
+		o.Revoking[id] = time.Now().UTC()
+		return nil
+	})
+}
+
+func (s *server) finishRevoke(ctx context.Context, id string) error {
+	return s.updateOperators(ctx, func(o *operatorSet) error {
+		delete(o.Revoking, id)
+		return nil
+	})
+}
+
+func (s *server) abortRevoke(ctx context.Context, id string) error {
+	return s.addOperator(ctx, id)
+}
+
+// reconcileOperators aligns the operator set with the stored keys at startup:
+// it adds operator keys missing from the set (installs from before the set
+// existed, or a revocation that crashed) and drops ids whose key is gone.
+// Keys under a live revocation claim stay uncounted.
+func (s *server) reconcileOperators(ctx context.Context) error {
+	actual := map[string]bool{}
+	err := store.ForEachJSON(ctx, s.env.Store, apiKeysBucket, func(id string, k apiKey) error {
+		if k.Role == roleOperator {
+			actual[id] = true
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	return s.updateOperators(ctx, func(o *operatorSet) error {
+		for id, t := range o.Revoking {
+			if time.Since(t) >= revokeClaimTTL {
+				delete(o.Revoking, id)
+			}
+		}
+		var ids []string
+		for id := range actual {
+			if _, revoking := o.Revoking[id]; !revoking {
+				ids = append(ids, id)
+			}
+		}
+		slices.Sort(ids)
+		o.IDs = ids
+		return nil
+	})
+}
+
+// recoverMintedFile repairs a crash between inserting the minted bootstrap key
+// and installing its file: the key then lives only in a temp file next to the
+// final path. It never prints the key.
+func (s *server) recoverMintedFile(ctx context.Context) error {
+	if s.env.DB != "bolt" {
+		return nil
+	}
+	var rec apiKey
+	if err := store.GetJSON(ctx, s.env.Store, apiKeysBucket, bootstrapMintedID, &rec); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	path := filepath.Join(s.env.Dir, BootstrapKeyFileName)
+	if _, err := os.Lstat(path); err == nil {
+		return nil
+	}
+	temps, _ := filepath.Glob(filepath.Join(s.env.Dir, "."+BootstrapKeyFileName+".*"))
+	for _, tmp := range temps {
+		data, err := os.ReadFile(tmp)
+		if err != nil {
+			continue
+		}
+		id, secret, err := parseKey(strings.TrimSpace(string(data)))
+		if err != nil || id != bootstrapMintedID {
+			continue
+		}
+		sum := sha256.Sum256([]byte(secret))
+		if subtle.ConstantTimeCompare([]byte(hex.EncodeToString(sum[:])), []byte(rec.Hash)) != 1 {
+			continue
+		}
+		if err := os.Rename(tmp, path); err != nil {
+			if _, statErr := os.Lstat(path); statErr == nil {
+				return nil
+			}
+			return fmt.Errorf("restoring bootstrap key file: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "mnemoca: restored the minted bootstrap key file at %s\n", path)
+		return nil
+	}
+	if _, err := os.Lstat(path); err == nil {
+		return nil
+	}
+	fmt.Fprintf(os.Stderr, "mnemoca: minted bootstrap key file %s is missing; recover access with %s\n", path, BootstrapKeyEnv)
+	return nil
 }

@@ -3,6 +3,8 @@ package api
 import (
 	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
 	"slices"
 	"time"
 
@@ -319,14 +321,15 @@ func (s *server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request, key 
 }
 
 // handleRevokeAPIKey deletes an API key. The last operator key cannot be
-// revoked: it would lock everyone out of the key API.
+// revoked: the count lives in the store and is claimed atomically, so this
+// holds across replicas. (Direct edits to the store, or losing the bootstrap
+// file's key to a re-adoption, are outside that guarantee.)
 func (s *server) handleRevokeAPIKey(w http.ResponseWriter, r *http.Request, caller *apiKey) {
+	ctx := r.Context()
 	id := r.PathValue("id")
-	s.keyMu.Lock()
-	defer s.keyMu.Unlock()
 
 	var target apiKey
-	if err := store.GetJSON(r.Context(), s.env.Store, apiKeysBucket, id, &target); err != nil {
+	if err := store.GetJSON(ctx, s.env.Store, apiKeysBucket, id, &target); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "API key %q not found", id)
 			return
@@ -334,36 +337,48 @@ func (s *server) handleRevokeAPIKey(w http.ResponseWriter, r *http.Request, call
 		writeError(w, http.StatusInternalServerError, "%v", err)
 		return
 	}
-	if target.Role == roleOperator {
-		operators := 0
-		err := store.ForEachJSON(r.Context(), s.env.Store, apiKeysBucket, func(_ string, k apiKey) error {
-			if k.Role == roleOperator {
-				operators++
+	isOperator := target.Role == roleOperator
+	if isOperator {
+		if err := s.beginRevoke(ctx, id); err != nil {
+			if errors.Is(err, errLastOperator) || errors.Is(err, errRevokeInProgress) {
+				writeError(w, http.StatusConflict, "%v", err)
+				return
 			}
-			return nil
-		})
-		if err != nil {
 			writeError(w, http.StatusInternalServerError, "%v", err)
 			return
 		}
-		if operators <= 1 {
-			writeError(w, http.StatusConflict, "refusing to revoke the last operator API key")
-			return
-		}
 	}
-	if err := s.env.Manager.Audit.Log(r.Context(), audit.Record{
+	rec := audit.Record{
 		Tenant: target.Tenant,
 		Actor:  s.actor(caller, r),
 		Action: "apikey.revoke",
 		Object: audit.Object{Type: "apikey", ID: id},
 		Detail: map[string]string{"role": target.Role, "tenant": target.Tenant},
-	}); err != nil {
+	}
+	fail := func(err error, audited bool) {
+		if audited {
+			rec.Action = "apikey.revoke.failed"
+			rec.Detail = map[string]string{"role": target.Role, "tenant": target.Tenant, "error": err.Error()}
+			_ = s.env.Manager.Audit.Log(ctx, rec)
+		}
+		if isOperator {
+			_ = s.abortRevoke(ctx, id)
+		}
 		writeError(w, http.StatusInternalServerError, "%v", err)
+	}
+	if err := s.env.Manager.Audit.Log(ctx, rec); err != nil {
+		fail(err, false)
 		return
 	}
-	if err := s.env.Store.Delete(r.Context(), apiKeysBucket, id); err != nil {
-		writeError(w, http.StatusInternalServerError, "%v", err)
+	if err := s.env.Store.Delete(ctx, apiKeysBucket, id); err != nil {
+		fail(err, true)
 		return
+	}
+	if isOperator {
+		_ = s.finishRevoke(ctx, id)
+	}
+	if id == bootstrapMintedID && s.env.DB == "bolt" {
+		_ = os.Remove(filepath.Join(s.env.Dir, BootstrapKeyFileName))
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

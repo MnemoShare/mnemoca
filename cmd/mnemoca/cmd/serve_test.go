@@ -1,10 +1,14 @@
 package cmd
 
 import (
+	"context"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mnemoshare/mnemoca/internal/api"
 )
@@ -58,4 +62,57 @@ func TestServeBootstrapKeyFileWiring(t *testing.T) {
 			t.Fatalf("err = %v, want the flag file (malformed key) to win", err)
 		}
 	})
+}
+
+func TestServeAdoptsBootstrapKeyFromEnvEndToEnd(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("MNEMOCA_PASSPHRASE", "test")
+	f := serveCmd.Flags().Lookup("bootstrap-api-key-file")
+	_ = f.Value.Set("")
+	f.Changed = false
+
+	RootCmd.SetArgs([]string{"init", "--alg", "ml-dsa-65", "--data-dir", dir})
+	if err := RootCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	key := "mnemoca_0123456789abcdef_" + strings.Repeat("0a", 32)
+	keyFile := filepath.Join(t.TempDir(), "key")
+	if err := os.WriteFile(keyFile, []byte(key+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(api.BootstrapKeyEnv, keyFile)
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := l.Addr().String()
+	_ = l.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	RootCmd.SetArgs([]string{"serve", "--listen", addr, "--data-dir", dir})
+	// Cobra keeps the context a subcommand ran with earlier; set it directly.
+	serveCmd.SetContext(ctx)
+	go func() { done <- RootCmd.ExecuteContext(ctx) }()
+
+	var status int
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		req, _ := http.NewRequest("GET", "http://"+addr+"/api/v1/tenants", nil)
+		req.Header.Set("Authorization", "Bearer "+key)
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			status = resp.StatusCode
+			_ = resp.Body.Close()
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("adopted env key status = %d, want 200", status)
+	}
 }

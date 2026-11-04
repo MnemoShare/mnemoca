@@ -318,6 +318,56 @@ func TestPutIfAbsentConcurrent(t *testing.T) {
 	})
 }
 
+var errAtFloor = errors.New("at floor")
+
+// TestUpdateAbortKeepsValueUnderContention is the primitive the last-operator
+// guard relies on: a read-modify-write whose fn can refuse, with no lost or
+// double-applied decrements.
+func TestUpdateAbortKeepsValueUnderContention(t *testing.T) {
+	forEachBackend(t, func(t *testing.T, s store.Store) {
+		ctx := context.Background()
+		path := []string{"guard"}
+		if err := store.PutJSON(ctx, s, path, "ops", &counterDoc{N: 3}); err != nil {
+			t.Fatal(err)
+		}
+		const racers = 20
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		ok, refused := 0, 0
+		for i := 0; i < racers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				err := store.UpdateJSON(ctx, s, path, "ops", false, func(v *counterDoc) error {
+					if v.N <= 1 {
+						return errAtFloor
+					}
+					v.N--
+					return nil
+				})
+				mu.Lock()
+				defer mu.Unlock()
+				switch {
+				case err == nil:
+					ok++
+				case errors.Is(err, errAtFloor):
+					refused++
+				default:
+					t.Errorf("unexpected error: %v", err)
+				}
+			}()
+		}
+		wg.Wait()
+		var v counterDoc
+		if err := store.GetJSON(ctx, s, path, "ops", &v); err != nil {
+			t.Fatal(err)
+		}
+		if v.N != 1 || ok != 2 || refused != racers-2 {
+			t.Fatalf("n=%d ok=%d refused=%d, want n=1 ok=2 refused=%d", v.N, ok, refused, racers-2)
+		}
+	})
+}
+
 func TestNextSeq(t *testing.T) {
 	forEachBackend(t, func(t *testing.T, s store.Store) {
 		ctx := context.Background()

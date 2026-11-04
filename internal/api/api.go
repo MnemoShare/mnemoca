@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"sync"
 
 	"github.com/mnemoshare/mnemoca/internal/ca"
 )
@@ -24,15 +23,14 @@ type Options struct {
 	// BootstrapKeyFile, when set, holds the operator API key to adopt if the
 	// store has no keys yet.
 	BootstrapKeyFile string
+	// BootstrapKeySource names where BootstrapKeyFile came from (flag or
+	// env var) for log messages.
+	BootstrapKeySource string
 }
 
 type server struct {
 	env  *ca.Env
 	opts Options
-
-	// keyMu serializes API-key revocation so two concurrent revokes cannot
-	// each leave the other operator key standing.
-	keyMu sync.Mutex
 }
 
 // New builds the REST API handler over an opened CA environment. On first

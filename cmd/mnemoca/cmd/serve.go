@@ -42,9 +42,10 @@ var serveCmd = &cobra.Command{
 		}
 
 		handler, err := api.New(env, api.Options{
-			ExternalURL:      serveExternalURL,
-			ACME:             acmeHandler(env, serveExternalURL, serveACMEEAB),
-			BootstrapKeyFile: bootstrapKeyFile(cmd),
+			ExternalURL:        serveExternalURL,
+			ACME:               acmeHandler(env, serveExternalURL, serveACMEEAB),
+			BootstrapKeyFile:   bootstrapKeyFile(cmd),
+			BootstrapKeySource: bootstrapKeySource(cmd),
 		})
 		if err != nil {
 			return err
@@ -108,4 +109,11 @@ func bootstrapKeyFile(cmd *cobra.Command) string {
 		return serveBootstrapKeyFile
 	}
 	return os.Getenv(api.BootstrapKeyEnv)
+}
+
+func bootstrapKeySource(cmd *cobra.Command) string {
+	if cmd.Flags().Changed("bootstrap-api-key-file") {
+		return "--bootstrap-api-key-file"
+	}
+	return "$" + api.BootstrapKeyEnv
 }
